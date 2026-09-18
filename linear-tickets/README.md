@@ -1,6 +1,6 @@
 # Linear tickets
 
-A Paseo sidebar plugin that connects to Linear MCP, shows tickets assigned to you,
+A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you,
 and starts an agent with the ticket details and comments in its first prompt.
 
 ## Install
@@ -51,7 +51,7 @@ from the selected base branch. Your existing checkout is not switched. Remote
 branches use their locally fetched state; fetch in the project first if you need
 the newest remote commits. Projects without Git use their project directory.
 
-The launch fetches fresh details, relationships and comments through Linear MCP.
+The launch fetches fresh details, relationships and comments through Linear's GraphQL API.
 The JSON response is preserved in the prompt, including the description and any
 returned links. Linked documents and attachments are not downloaded. If comments
 are unavailable, the preview and agent prompt say so. Context over 200,000 characters
@@ -79,9 +79,9 @@ file uses mode `0600`; it is a plaintext credential, not an OS keychain entry.
 key; environment keys must be removed from the daemon environment followed by a
 restart. All clients connected to this host share the same Linear account.
 
-The plugin uses Linear's official [read-only MCP endpoint](https://linear.app/docs/mcp)
-at `https://mcp.linear.app/mcp/readonly`. Only the server contacts Linear. The key
-is never added to ticket context, agent configuration, or agent labels.
+The plugin talks directly to Linear's official [GraphQL API](https://linear.app/developers/graphql)
+at `https://api.linear.app/graphql` with read-only queries. Only the server contacts
+Linear. The key is never added to ticket context, agent configuration, or agent labels.
 
 Repeated launch requests reuse their result for the lifetime of the loaded plugin.
 If agent creation returns an uncertain failure, the same request is not retried
@@ -91,6 +91,6 @@ start again. This retry cache does not survive a plugin or daemon restart.
 ## Validation
 
 `npm run typecheck` checks both entrypoints against Paseo's SDK. `npm test` covers
-MCP response parsing, pagination, context preservation, credential persistence,
+GraphQL response parsing, pagination, context preservation, credential persistence,
 ticket retrieval, and agent creation/retries with mocked Linear and Paseo calls.
 Live account authentication and agent execution require your configured host and key.

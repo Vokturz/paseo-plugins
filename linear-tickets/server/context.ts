@@ -19,46 +19,45 @@ export function normalizeIssue(value: unknown): Issue {
   if (typeof issue.id !== "string" || !issue.id || typeof issue.title !== "string") {
     throw new Error("Linear returned an issue without an ID or title.");
   }
+  const labelsValue = issue.labels;
+  const labels = Array.isArray(labelsValue) ? labelsValue
+    : labelsValue && typeof labelsValue === "object" && Array.isArray((labelsValue as { nodes?: unknown }).nodes) ? (labelsValue as { nodes: unknown[] }).nodes : [];
   return {
     id: issue.id,
     identifier: label(issue.identifier) || issue.id,
     title: issue.title,
     url: label(issue.url),
     status: label(issue.status ?? issue.state),
-    priority: label(issue.priority),
+    priority: label(issue.priorityLabel ?? issue.priority),
     project: label(issue.project),
     description: label(issue.description),
     team: label(issue.team),
-    labels: Array.isArray(issue.labels) ? issue.labels.map(label).filter(Boolean) : [],
+    labels: labels.map(label).filter(Boolean),
     updatedAt: label(issue.updatedAt),
     createdAt: label(issue.createdAt),
   };
 }
 
-// Linear tools may return structuredContent or JSON inside text content blocks.
-export function toolData(result: unknown): unknown {
-  const response = record(result);
-  if (response.isError) throw new Error("Linear could not complete the request. Check the API key and issue access, then retry.");
-  if (response.structuredContent != null) return response.structuredContent;
-  if (Array.isArray(response.content)) {
-    const text = response.content
-      .filter((item) => item?.type === "text" && typeof item.text === "string")
-      .map((item) => item.text).join("\n");
-    try { return JSON.parse(text); } catch { /* Fail visibly instead of silently showing no issues. */ }
-  }
-  throw new Error("Linear returned a response this plugin cannot read.");
+// Linear GraphQL connections expose nodes plus pageInfo { hasNextPage, endCursor }.
+// hasNextPage is null when pageInfo (or the field) is absent.
+export function connection(data: unknown): { nodes: unknown[]; hasNextPage: boolean | null; endCursor: string | null } {
+  const page = record(data);
+  const nodes = Array.isArray(page.nodes) ? page.nodes : [];
+  const info: Record<string, unknown> = page.pageInfo && typeof page.pageInfo === "object" && !Array.isArray(page.pageInfo)
+    ? page.pageInfo as Record<string, unknown> : {};
+  return {
+    nodes,
+    hasNextPage: info.hasNextPage === true ? true : info.hasNextPage === false ? false : null,
+    endCursor: typeof info.endCursor === "string" && info.endCursor ? info.endCursor : null,
+  };
 }
 
 export function issuePage(data: unknown) {
   const page = record(data);
-  if (!Array.isArray(page.issues)) throw new Error("Linear did not return an issue list.");
-  const nextCursor = typeof page.nextCursor === "string" && page.nextCursor ? page.nextCursor
-    : typeof page.cursor === "string" && page.cursor ? page.cursor : null;
-  if (page.hasNextPage === true && !nextCursor) throw new Error("Linear did not return a cursor for the next page.");
-  return {
-    issues: page.issues.map(normalizeIssue),
-    nextCursor: page.hasNextPage === false ? null : nextCursor,
-  };
+  if (!Array.isArray(page.nodes)) throw new Error("Linear did not return an issue list.");
+  const cursor = connection(data);
+  if (cursor.hasNextPage === true && !cursor.endCursor) throw new Error("Linear did not return a cursor for the next page.");
+  return { issues: page.nodes.map(normalizeIssue), nextCursor: cursor.hasNextPage === false ? null : cursor.endCursor };
 }
 
 export function buildContext(issueData: unknown, comments: unknown): string {

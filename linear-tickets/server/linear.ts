@@ -1,56 +1,116 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { TicketDetail } from "../shared/contracts";
-import { buildContext, toolData, normalizeIssue, issuePage, record } from "./context";
+import { buildContext, normalizeIssue, issuePage, connection, record } from "./context";
 import { Credentials } from "./credentials";
 
-const endpoint = "https://mcp.linear.app/mcp/readonly";
-export interface LinearSession {
-  tools: Set<string>;
-  call(name: string, args: Record<string, unknown>): Promise<unknown>;
-  close(): Promise<void>;
-}
-export type Connect = (key: string) => Promise<LinearSession>;
+const endpoint = "https://api.linear.app/graphql";
+export type Post = (key: string, query: string, variables: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
-export const connectMcp: Connect = async (key) => {
-  const client = new Client({ name: "paseo-linear-tickets", version: "0.1.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
-    requestInit: { headers: { Authorization: `Bearer ${key}` }, redirect: "error" },
-    fetch: (url, init) => fetch(url, { ...init, signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30000)]) }),
-  });
+// GraphQL error payloads carry a user-facing message, sometimes clearer than the HTTP status alone.
+function apiMessage(payload: unknown): string {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { errors?: unknown }).errors)) return "";
+  const messages = (payload as { errors: unknown[] }).errors
+    .map((error) => {
+      if (!error || typeof error !== "object") return "";
+      const e = error as { message?: string; extensions?: { userPresentableMessage?: string } };
+      return e.extensions?.userPresentableMessage ?? e.message ?? "";
+    })
+    .filter(Boolean).join("; ");
+  return messages.length > 300 ? messages.slice(0, 300) + "…" : messages;
+}
+
+export const postGraphQL: Post = async (key, query, variables) => {
+  let response: Response;
   try {
-    await client.connect(transport, { timeout: 30000 });
-    const tools = new Set<string>();
-    let cursor: string | undefined;
-    const seen = new Set<string>();
-    do {
-      const page = await client.listTools(cursor ? { cursor } : {}, { timeout: 30000 });
-      page.tools.forEach((tool) => tools.add(tool.name));
-      cursor = page.nextCursor;
-      if (cursor && seen.has(cursor)) throw new Error("Repeated tool cursor");
-      if (cursor) seen.add(cursor);
-    } while (cursor);
-    for (const name of ["list_issues", "get_issue"]) {
-      if (!tools.has(name)) throw new Error(`Missing Linear tool: ${name}`);
-    }
-    return {
-      tools,
-      async call(name, args) {
-        let result: unknown;
-        try { result = await client.callTool({ name, arguments: args }, undefined, { timeout: 30000 }); }
-        catch { throw new Error("Linear MCP request failed. Check your connection and ticket access, then retry."); }
-        return toolData(result);
-      },
-      close: () => client.close(),
-    };
+    response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "error",
+      // Linear rejects the Bearer prefix for API keys on the GraphQL API.
+      headers: { authorization: key, "content-type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(30_000),
+    });
   } catch {
-    await client.close().catch(() => {});
-    throw new Error("Could not connect to Linear MCP. Check the API key, its read access, and the host's network connection.");
+    throw new Error("Could not reach the Linear API. Check the host's network connection and try again.");
   }
+  let payload: unknown = null;
+  try { payload = await response.json(); } catch { /* Mapped by status below. */ }
+  if (!response.ok) {
+    const message = apiMessage(payload);
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`Linear rejected this API key.${message ? ` ${message}` : ""} Check it in Linear settings and reconnect.`);
+    }
+    if (response.status === 429) throw new Error(`Linear is rate-limiting this host.${message ? ` ${message}` : ""} Try again in a moment.`);
+    if (message) throw new Error(`The Linear API request failed: ${message}`);
+    throw new Error(`The Linear API request failed (HTTP ${response.status}). Try again.`);
+  }
+  if (payload == null) throw new Error("Linear returned an invalid response.");
+  const body = record(payload);
+  if (Array.isArray(body.errors) && body.errors.length > 0) {
+    const message = body.errors
+      .map((error) => (error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : ""))
+      .filter(Boolean).join("; ");
+    throw new Error(`The Linear API request failed${message ? `: ${message}` : "."} Check your API key and ticket access, then retry.`);
+  }
+  return record(body.data);
 };
 
+export const VIEWER_QUERY = `query viewerCheck {
+  viewer { id }
+}`;
+
+export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String) {
+  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: { assignee: { isMe: { eq: true } } }) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      state { name }
+      priorityLabel
+      project { name identifier url }
+      team { name key }
+      labels(first: 50) { nodes { id name } }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    description
+    url
+    state { name }
+    priorityLabel
+    project { id name identifier url }
+    team { id name key }
+    labels(first: 50) { nodes { id name } }
+    createdAt
+    updatedAt
+    parent { id identifier title url }
+    children(first: 50) { nodes { id identifier title url } }
+    relations(first: 50) { nodes { type issue { id identifier title } relatedIssue { id identifier title } } }
+    attachments(first: 50) { nodes { id title url } }
+    documents(first: 50) { nodes { id title url } }
+  }
+}`;
+
+export const COMMENT_QUERY = `query issueComments($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) {
+    comments(first: $first, after: $after) {
+      nodes { id body createdAt url user { name } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}`;
+
 export class LinearService {
-  constructor(readonly credentials = new Credentials(), private readonly connect: Connect = connectMcp) {}
+  constructor(readonly credentials = new Credentials(), private readonly post: Post = postGraphQL) {}
 
   async status() {
     const { key, source } = await this.credentials.read();
@@ -58,11 +118,12 @@ export class LinearService {
   }
 
   async authenticate(key: string) {
-    const session = await this.connect(key);
-    try {
-      issuePage(await session.call("list_issues", { assignee: "me", limit: 1, includeArchived: false }));
-      await this.credentials.save(key);
-    } finally { await session.close().catch(() => {}); }
+    const data = await this.post(key, VIEWER_QUERY, {});
+    const viewer = data.viewer;
+    if (!viewer || typeof viewer !== "object" || typeof (viewer as { id?: unknown }).id !== "string") {
+      throw new Error("Linear did not confirm this API key. Check it in Linear settings and reconnect.");
+    }
+    await this.credentials.save(key);
     return this.status();
   }
 
@@ -71,34 +132,40 @@ export class LinearService {
     return this.status();
   }
 
-  private async withSession<T>(work: (session: LinearSession) => Promise<T>) {
+  private async withKey<T>(work: (key: string) => Promise<T>): Promise<T> {
     const { key } = await this.credentials.read();
     if (!key) throw new Error("Connect Linear before loading tickets.");
-    const session = await this.connect(key);
-    try { return await work(session); }
-    finally { await session.close().catch(() => {}); }
+    return work(key);
   }
 
   async issues(cursor?: string) {
-    return this.withSession(async (session) => issuePage(await session.call("list_issues", {
-      assignee: "me", limit: 50, includeArchived: false, orderBy: "updatedAt", ...(cursor ? { cursor } : {}),
-    })));
+    return this.withKey(async (key) =>
+      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null })).issues));
   }
 
   async detail(id: string): Promise<TicketDetail> {
-    return this.withSession(async (session) => {
-      const rawIssue = record(await session.call("get_issue", { id, includeRelations: true }));
-      const issue = normalizeIssue(rawIssue);
+    return this.withKey(async (key) => {
+      const data = record(await this.post(key, ISSUE_DETAIL_QUERY, { id }));
+      if (!data.issue || typeof data.issue !== "object") {
+        throw new Error("Linear did not return this issue. Check that you have access to it.");
+      }
+      const issueData = record(data.issue);
+      const issue = normalizeIssue(issueData);
       const warnings: string[] = [];
-      let comments: unknown = [];
-      if (session.tools.has("list_comments")) {
-        try { comments = await session.call("list_comments", { issueId: issue.id }); }
-        catch { warnings.push("Comments could not be loaded; only the ticket details are included."); }
-      } else { warnings.push("The Linear connection does not expose comments."); }
-      return {
-        issue, warnings,
-        context: buildContext(rawIssue, comments),
-      };
+      let comments: unknown[] = [];
+      try {
+        let after: string | null = null;
+        for (;;) {
+          const page = connection(record(record(await this.post(key, COMMENT_QUERY, { id: issue.id, first: 50, after })).issue).comments);
+          comments.push(...page.nodes);
+          after = page.hasNextPage === true ? page.endCursor : null;
+          if (!after) break;
+        }
+      } catch {
+        comments = [];
+        warnings.push("Comments could not be loaded; only the ticket details are included.");
+      }
+      return { issue, warnings, context: buildContext(issueData, comments) };
     });
   }
 }

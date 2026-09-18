@@ -2,22 +2,36 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
 import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOptions } from "@getpaseo/client";
-import { buildContext, buildPrompt, issuePage, normalizeIssue, toolData } from "./context";
+import { buildContext, buildPrompt, issuePage, normalizeIssue, connection } from "./context";
 import { Credentials } from "./credentials";
 import { Launcher } from "./launch";
-import { LinearService, type LinearSession } from "./linear";
+import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, type Post } from "./linear";
 
+// GraphQL-shaped fixture: workflow state, priority label, label connection,
+// and the relationship fields the detail query requests.
 const rawIssue = {
   id: "issue-1", identifier: "ENG-42", title: "Fix the sign-in flow",
   description: "Keep the existing session alive.", url: "https://linear.app/example/issue/ENG-42",
-  status: { name: "In Progress" }, project: { name: "App" }, labels: ["bug"],
-  relations: { blocks: [{ identifier: "ENG-43" }] },
+  state: { name: "In Progress" }, priorityLabel: "P1",
+  project: { id: "project-1", name: "App", identifier: "APP", url: "https://linear.app/example/project/app" },
+  team: { id: "team-1", name: "Engineering", key: "ENG" },
+  labels: { nodes: [{ id: "label-1", name: "bug" }] },
+  createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-02T00:00:00.000Z",
+  parent: null,
+  children: { nodes: [{ id: "issue-3", identifier: "ENG-44", title: "Child task" }] },
+  relations: { nodes: [{ type: "blocks", issue: null, relatedIssue: { id: "issue-2", identifier: "ENG-43", title: "Blocked work" } }] },
+  attachments: { nodes: [{ id: "attachment-1", title: "screenshot.png", url: "https://files.example.com/screenshot.png" }] },
+  documents: { nodes: [] },
 };
-const detail = { issue: normalizeIssue(rawIssue), context: buildContext(rawIssue, [{ body: "Regression on mobile" }]), warnings: [] };
+const comment = {
+  id: "comment-1", body: "Regression on mobile", createdAt: "2025-01-02T01:00:00.000Z",
+  url: "https://linear.app/example/issue/ENG-42#comment-1", user: { name: "Tofu" },
+};
+const detail = { issue: normalizeIssue(rawIssue), context: buildContext(rawIssue, [comment]), warnings: [] };
 const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
 
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
@@ -27,22 +41,88 @@ test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   cleanup();
 });
 
-test("tool responses accept structured content and JSON text, and reject malformed or error responses", () => {
-  assert.deepEqual(toolData({ structuredContent: rawIssue }), rawIssue);
-  assert.deepEqual(toolData({ content: [{ type: "text", text: JSON.stringify(rawIssue) }] }), rawIssue);
-  assert.throws(() => toolData({ isError: true, content: [{ type: "text", text: "private upstream error" }] }), /could not complete/);
-  assert.throws(() => toolData({ content: [{ type: "text", text: "not JSON" }] }), /cannot read/);
+function mockFetch(t: TestContext, makeResponse: () => Response): void {
+  t.mock.method(globalThis, "fetch", ((url: string | URL | Request, init?: RequestInit) =>
+    Promise.resolve(makeResponse())) as typeof fetch);
+}
+
+test("Linear API requests carry the key, exact query and variables, and never follow redirects", async (t) => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  t.mock.method(globalThis, "fetch", ((url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return Promise.resolve(new Response(JSON.stringify({ data: { viewer: { id: "user-1" } } }), { status: 200, headers: { "content-type": "application/json" } }));
+  }) as typeof fetch);
+  const data = await postGraphQL("secret-key", "query q { viewer { id } }", { a: 1 });
+  assert.deepEqual(data, { viewer: { id: "user-1" } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.linear.app/graphql");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.redirect, "error");
+  const headers = calls[0].init.headers as Record<string, string>;
+  // Linear's GraphQL API takes the raw key; a Bearer prefix is rejected with HTTP 400.
+  assert.equal(headers.authorization, "secret-key");
+  assert.equal(headers["content-type"], "application/json");
+  assert.deepEqual(JSON.parse(calls[0].init.body as string), { query: "query q { viewer { id } }", variables: { a: 1 } });
+  assert.ok(calls[0].init.signal instanceof AbortSignal);
+});
+
+test("authentication, rate-limit and server failures map to user-actionable errors", async (t) => {
+  const cases: Array<{ status: number; body: unknown; message: RegExp }> = [
+    { status: 401, body: { errors: [{ message: "Authentication required" }] }, message: /rejected this API key. Authentication required/ },
+    { status: 403, body: { errors: [{ message: "forbidden" }] }, message: /rejected this API key. forbidden/ },
+    { status: 429, body: { errors: [{ message: "rate limited" }] }, message: /rate-limiting/ },
+    { status: 400, body: { errors: [{ message: "Remove the Bearer prefix from the Authorization header." }] }, message: /request failed: Remove the Bearer prefix/ },
+    { status: 500, body: { errors: [{ message: "boom" }] }, message: /request failed: boom/ },
+    { status: 502, body: "gateway html", message: /HTTP 502/ },
+  ];
+  for (const { status, body, message } of cases) {
+    mockFetch(t, () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+    await assert.rejects(postGraphQL("key", "query q { viewer { id } }", {}), message);
+  }
+});
+
+test("GraphQL error payloads fail visibly with the API message", async (t) => {
+  mockFetch(t, () => new Response(JSON.stringify({ data: null, errors: [{ message: "Issue not found" }] }), { status: 200, headers: { "content-type": "application/json" } }));
+  await assert.rejects(postGraphQL("key", "query q { issue(id: \"x\") { id } }", {}), /Issue not found/);
+});
+
+test("invalid response bodies fail loudly", async (t) => {
+  mockFetch(t, () => new Response("not json", { status: 200, headers: { "content-type": "text/plain" } }));
+  await assert.rejects(postGraphQL("key", "q", {}), /invalid response/);
+  mockFetch(t, () => new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } }));
+  await assert.rejects(postGraphQL("key", "q", {}), /unexpected response/);
+});
+
+test("network failures surface as connection errors", async (t) => {
+  t.mock.method(globalThis, "fetch", (() => Promise.reject(new Error("ECONNREFUSED"))) as typeof fetch);
+  await assert.rejects(postGraphQL("key", "q", {}), /Could not reach/);
+});
+
+test("issue normalization reads workflow state, priority labels and label connections", () => {
+  const issue = normalizeIssue(rawIssue);
+  assert.equal(issue.identifier, "ENG-42");
+  assert.equal(issue.status, "In Progress");
+  assert.equal(issue.priority, "P1");
+  assert.equal(issue.project, "App");
+  assert.equal(issue.team, "Engineering");
+  assert.deepEqual(issue.labels, ["bug"]);
+  assert.equal(issue.description, rawIssue.description);
+  assert.equal(issue.updatedAt, rawIssue.updatedAt);
   assert.throws(() => normalizeIssue({ title: "Missing ID" }), /without an ID/);
 });
 
-test("pagination keeps cursors and normalizes nested fields without silently accepting missing pages", () => {
-  const page = issuePage({ issues: [rawIssue], cursor: "next", hasNextPage: true });
+test("connections expose nodes, page cursors and missing-page detection", () => {
+  assert.deepEqual(connection({ nodes: [rawIssue], pageInfo: { hasNextPage: true, endCursor: "next" } }).endCursor, "next");
+  assert.equal(connection({ nodes: [], pageInfo: { hasNextPage: false, endCursor: "last" } }).hasNextPage, false);
+  assert.deepEqual(connection({}).nodes, []);
+});
+
+test("issue pagination follows pageInfo cursors and rejects missing ones", () => {
+  const page = issuePage({ nodes: [rawIssue], pageInfo: { hasNextPage: true, endCursor: "next" } });
   assert.equal(page.nextCursor, "next");
-  assert.equal(page.issues[0].status, "In Progress");
-  assert.equal(page.issues[0].project, "App");
-  assert.equal(issuePage({ issues: [], nextCursor: "next" }).nextCursor, "next");
-  assert.equal(issuePage({ issues: [], cursor: "last", hasNextPage: false }).nextCursor, null);
-  assert.throws(() => issuePage({ issues: [], hasNextPage: true }), /cursor/);
+  assert.equal(page.issues[0].identifier, "ENG-42");
+  assert.equal(issuePage({ nodes: [], pageInfo: { hasNextPage: false, endCursor: "last" } }).nextCursor, null);
+  assert.throws(() => issuePage({ nodes: [], pageInfo: { hasNextPage: true } }), /cursor/);
   assert.throws(() => issuePage({}), /issue list/);
 });
 
@@ -76,46 +156,98 @@ test("saved credentials stay on disk with private permissions and environment cr
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-function mockLinear(call: LinearSession["call"], tools = ["list_issues", "get_issue", "list_comments"]) {
-  let closed = 0;
-  const service = new LinearService(new Credentials("/unused", "test-key"), async (key) => {
-    assert.equal(key, "test-key");
-    return { tools: new Set(tools), call, close: async () => { closed++; } };
-  });
-  return { service, closed: () => closed };
+type PostCall = { key: string; query: string; variables: Record<string, unknown> };
+
+function mockLinear(post: Post, environmentKey = "test-key") {
+  return new LinearService(new Credentials("/unused", environmentKey), post);
 }
 
 test("ticket listing requests the authenticated user's assignments and forwards the cursor", async () => {
-  const mock = mockLinear(async (name, args) => {
-    assert.equal(name, "list_issues");
-    assert.deepEqual(args, { assignee: "me", limit: 50, includeArchived: false, orderBy: "updatedAt", cursor: "page-2" });
-    return { issues: [rawIssue], hasNextPage: false };
-  });
-  assert.equal((await mock.service.issues("page-2")).issues[0].identifier, "ENG-42");
-  assert.equal(mock.closed(), 1);
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return { issues: { nodes: [rawIssue], pageInfo: { hasNextPage: false, endCursor: null } } };
+  };
+  const service = mockLinear(post);
+  assert.deepEqual((await service.issues()).nextCursor, null);
+  const page = await service.issues("page-2");
+  assert.equal(page.issues[0].identifier, "ENG-42");
+  assert.equal(page.issues[0].status, "In Progress");
+  assert.equal(page.issues[0].labels[0], "bug");
+  assert.equal(page.nextCursor, null);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.key, "test-key");
+    assert.equal(call.query, LIST_ISSUES_QUERY);
+  }
+  assert.deepEqual(calls[0].variables, { first: 50, after: null });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2" });
 });
 
-test("details fetch relations and comments using the resolved issue ID, and close the connection", async () => {
-  const calls: string[] = [];
-  const mock = mockLinear(async (name, args) => {
-    calls.push(name);
-    if (name === "get_issue") { assert.deepEqual(args, { id: "ENG-42", includeRelations: true }); return rawIssue; }
-    assert.deepEqual(args, { issueId: "issue-1" });
-    return [{ body: "Fresh comment" }];
-  });
-  const result = await mock.service.detail("ENG-42");
-  assert.deepEqual(calls, ["get_issue", "list_comments"]);
-  assert.equal(JSON.parse(result.context).comments[0].body, "Fresh comment");
+test("details fetch relations and paginated comments using the resolved issue ID", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    if (query === ISSUE_DETAIL_QUERY) return { issue: rawIssue };
+    if (query === COMMENT_QUERY) {
+      assert.equal(variables.id, "issue-1");
+      assert.equal(variables.first, 50);
+      return variables.after == null
+        ? { issue: { comments: { nodes: [comment], pageInfo: { hasNextPage: true, endCursor: "c2" } } } }
+        : { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: "c3" } } } };
+    }
+    throw new Error(`Unexpected query: ${query}`);
+  };
+  const result = await mockLinear(post).detail("ENG-42");
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].query, ISSUE_DETAIL_QUERY);
+  assert.deepEqual(calls[0].variables, { id: "ENG-42" });
+  assert.equal(calls[1].query, COMMENT_QUERY);
+  assert.deepEqual(calls[1].variables, { id: "issue-1", first: 50, after: null });
+  assert.deepEqual(calls[2].variables, { id: "issue-1", first: 50, after: "c2" });
+  assert.equal(JSON.parse(result.context).comments.length, 1);
+  assert.equal(JSON.parse(result.context).comments[0].body, "Regression on mobile");
   assert.deepEqual(result.warnings, []);
-  assert.equal(mock.closed(), 1);
 });
 
-test("unavailable comments produce an explicit warning while ticket failures close and reject", async () => {
-  const missing = mockLinear(async () => rawIssue, ["get_issue", "list_issues"]);
-  assert.match((await missing.service.detail("ENG-42")).warnings[0], /does not expose comments/);
-  const failure = mockLinear(async () => { throw new Error("Connection lost"); });
-  await assert.rejects(failure.service.detail("ENG-42"), /Connection lost/);
-  assert.equal(failure.closed(), 1);
+test("comment failures produce an explicit warning while the ticket details remain", async () => {
+  const post: Post = async (_key, query) => {
+    if (query === ISSUE_DETAIL_QUERY) return { issue: rawIssue };
+    throw new Error("Connection lost");
+  };
+  const result = await mockLinear(post).detail("ENG-42");
+  assert.match(result.warnings[0], /Comments could not be loaded/);
+  assert.deepEqual(JSON.parse(result.context).comments, []);
+});
+
+test("missing issues fail explicitly and unconnected access asks for a connection", async () => {
+  const post: Post = async () => ({ issue: null });
+  await assert.rejects(mockLinear(post).detail("ENG-99"), /did not return this issue/);
+  await assert.rejects(mockLinear(post, "").issues(), /Connect Linear/);
+});
+
+test("authenticate confirms the viewer and saves the key", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-linear-auth-"));
+  const path = join(directory, "credentials.json");
+  try {
+    const calls: PostCall[] = [];
+    const post: Post = async (key, query, variables) => {
+      calls.push({ key, query, variables });
+      return { viewer: { id: "user-1" } };
+    };
+    const service = new LinearService(new Credentials(path, ""), post);
+    const status = await service.authenticate("fresh-key");
+    assert.deepEqual(status, { connected: true, source: "saved" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].key, "fresh-key");
+    assert.equal(calls[0].query, VIEWER_QUERY);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { apiKey: "fresh-key" });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("authenticate rejects keys Linear cannot confirm", async () => {
+  const post: Post = async () => ({ viewer: null });
+  await assert.rejects(mockLinear(post).authenticate("bad-key"), /did not confirm this API key/);
 });
 
 function mockPaseo(create: (options: PaseoWorkspaceAgentCreateOptions) => Promise<{ id: string }>, project: object | null = { projectId: "project-1", projectKind: "directory", projectRootPath: "/repo" }, onWorkspace?: (options: PaseoWorkspaceCreateOptions) => void) {
