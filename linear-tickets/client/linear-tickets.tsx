@@ -1,14 +1,15 @@
 import type { PaseoProject } from "@getpaseo/client";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { branchesRpc, connectRpc, issueContextRpc, disconnectRpc, listIssuesRpc, launchAgentRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
-import { filterIssues, formatIssueDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
+import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
-import { Icon } from "@getpaseo/plugin/client/react-native";
-import { ActionButton, BrandMark, FieldLabel, ProviderMark, SectionHeading, StatusBadge } from "./ui";
+import { Icon, copyText } from "@getpaseo/plugin/client/react-native";
+import { BrandMark, Button, Callout, Divider, EmptyState, FieldLabel, LabelChip, MetaItem, PriorityMark, ProviderMark, SectionHeading, Segmented, Skeleton, StatusBadge, SurfaceProvider, statusAccent } from "./ui";
+import { tokensFor } from "./design";
 import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
 
@@ -58,6 +59,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const [showContext, setShowContext] = useState(false);
+  const [contextCopied, setContextCopied] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,7 +135,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
   useEffect(() => {
     let cancelled = false;
-    setDetail(null); setDetailError(null); setShowContext(false);
+    setDetail(null); setDetailError(null); setShowContext(false); setContextCopied(false);
     if (!selected) { setDetailLoading(false); return; }
     setDetailLoading(true);
     void getDetail({ id: selected.id }).then((value) => {
@@ -170,26 +173,20 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const canLaunch = Boolean(detail && project && provider && !optionsLoading && !branchesLoading
     && (project.projectKind !== "git" || (baseBranch && !branchesError)));
 
-  const colors = theme.colors;
-  const styles = {
-    content: { padding: layout.compact ? 16 : 32, gap: 22, width: "100%" as const, maxWidth: 1280, alignSelf: "center" as const },
-    row: { flexDirection: "row" as const, flexWrap: "wrap" as const, alignItems: "center" as const, gap: 8 },
-    card: { backgroundColor: colors.surface1, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: layout.compact ? 18 : 24, gap: 12 },
-    detailLayout: { flexDirection: layout.compact ? "column" as const : "row" as const, alignItems: "flex-start" as const, gap: 22 },
-    text: { color: colors.foreground, fontSize: 14, lineHeight: 24 },
-    muted: { color: colors.foregroundMuted, fontSize: 13, lineHeight: 20 },
-    heading: { color: colors.foreground, fontSize: 18, fontWeight: "700" as const },
-    input: { color: colors.foreground, backgroundColor: colors.surface0, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
-    error: { color: colors.statusDanger, fontSize: 13, lineHeight: 20 },
-  };
-  const Button = (props: { title: string; icon?: string; leading?: ReactNode; onPress: () => void; primary?: boolean; disabled?: boolean; chosen?: boolean }) => (
-    <ActionButton {...props} theme={theme} disabled={props.disabled || Boolean(busy)} />
-  );
+  const t = useMemo(() => tokensFor(theme, layout), [theme, layout]);
+  const colors = t.colors;
 
   const visible = filterIssues(issues, query, status, dateField, dateDirection);
   const statuses = statusCounts(issues);
   // Keep a selected filter visible even when a refresh removes its last ticket.
   if (status && !statuses.some(([name]) => name === status)) statuses.push([status, 0]);
+  const ticketsLoading = busy === "Loading connection" || busy === "Refreshing tickets" || busy === "Loading tickets" || busy === "Loading all tickets";
+  const current = detail?.issue ?? selected;
+  const missingRequirement = !project ? "Choose a project"
+    : project.projectKind === "git" && !baseBranch ? "Choose a base branch"
+      : !provider ? "Choose a model"
+        : optionsLoading || branchesLoading ? "Loading choices…"
+          : !detail ? "Loading ticket details…" : "";
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
   };
@@ -200,191 +197,287 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, requestId: launchRequest.current.id });
     setAgent(result);
   });
+  const copyContext = () => {
+    if (!detail) return;
+    void copyText(detail.context).then(() => { setContextCopied(true); setTimeout(() => setContextCopied(false), 1600); }, () => setContextCopied(false));
+  };
 
-  return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={styles.content}>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 18, paddingBottom: 22, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 16, flex: 1, minWidth: 230 }}>
-        <View style={{ width: 50, height: 50, borderRadius: 16, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
-          <BrandMark brand="linear" label="Linear" theme={theme} size={28} radius={16} />
+  const connectionPill = connection?.connected ? <View style={{ flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 11, paddingVertical: 6 }}>
+    <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.statusSuccess }} />
+    <Text style={{ ...t.muted, fontSize: 12, fontWeight: "600" }}>{connection.source === "environment" ? "Host key" : "Connected"}</Text>
+  </View> : null;
+
+  const metaLine = (issue: Issue) => {
+    const chips = issue.labels.slice(0, layout.compact ? 1 : 2);
+    const extra = issue.labels.length - chips.length;
+    const places = [issue.project, issue.team].filter(Boolean).join(" · ");
+    if (!places && !chips.length && !extra) return null;
+    return <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
+      {!!places && <Text numberOfLines={1} style={t.muted}>{places}</Text>}
+      {chips.map((label) => <LabelChip key={label} label={label} t={t} />)}
+      {extra > 0 && <Text style={t.muted}>+{extra}</Text>}
+    </View>;
+  };
+
+  return <SurfaceProvider t={t} busy={Boolean(busy)}><ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 28, gap: layout.compact ? 18 : 22, width: "100%", maxWidth: 1280, alignSelf: "center" }}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 16, paddingBottom: 20, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 15, flex: 1, minWidth: 230 }}>
+        <View style={{ width: 52, height: 52, borderRadius: 17, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" }}>
+          <BrandMark brand="linear" label="Linear" theme={theme} size={26} radius={17} />
         </View>
-        <View style={{ gap: 4, flex: 1 }}>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 10, fontWeight: "700", letterSpacing: 2 }}>LINEAR / MY WORK</Text>
-          <Text style={{ color: colors.foreground, fontSize: layout.compact ? 24 : 29, fontWeight: "700", letterSpacing: -0.7 }}>Linear tickets</Text>
-          <Text style={styles.muted}>{selected ? "A little context. A clear starting point." : "Your next idea, fix, or feature starts here."}</Text>
+        <View style={{ gap: 3, flex: 1 }}>
+          <Text style={{ ...t.eyebrow, textTransform: "uppercase" }}>Linear · My work</Text>
+          <Text style={t.title}>Linear tickets</Text>
+          <Text style={t.muted}>{selected ? "A little context. A clear starting point." : "Your next idea, fix, or feature starts here."}</Text>
         </View>
       </View>
-      {connection?.connected && <View style={styles.row}>
-        <Button title="Connection" icon="Plug" chosen={manageConnection} onPress={() => setManageConnection(!manageConnection)} />
-        <Button title="Refresh" icon="RefreshCw" onPress={() => void run("Refreshing tickets", async () => { await loadIssues(); })} />
-      </View>}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+        {connectionPill}
+        {connection?.connected && <>
+          <Button title="Connection" icon="Plug" iconOnly size="md" chosen={manageConnection} onPress={() => setManageConnection(!manageConnection)} />
+          <Button title="Refresh tickets" icon="RefreshCw" iconOnly onPress={() => void run("Refreshing tickets", async () => { await loadIssues(); })} />
+        </>}
+      </View>
     </View>
-    {busy && <View style={styles.row}><ActivityIndicator color={colors.accent} /><Text style={styles.muted}>{busy}…</Text></View>}
-    {error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+    {busy && !ticketsLoading && <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}><ActivityIndicator color={colors.accent} /><Text style={t.muted}>{busy}…</Text></View>}
+    {error && <Callout message={error} tone="danger" t={t} />}
 
-    {!connection?.connected ? <View style={styles.card}>
-      <SectionHeading title="Connect your work" subtitle="Bring your assigned Linear tickets into Paseo." icon="Plug" theme={theme} />
-      <Text style={styles.text}>Create a personal API key in Linear → Settings → Security & access, then paste it below.</Text>
-      <Text style={styles.muted}>The connection is shared by clients on this Paseo host. Your key is saved privately on the host.</Text>
-      <Text style={styles.muted}>A key with Read permission is enough. You can also set LINEAR_API_KEY in the daemon environment and restart it.</Text>
-      <TextInput accessibilityLabel="Linear API key" secureTextEntry autoCapitalize="none" autoCorrect={false} value={key} onChangeText={setKey} placeholder="Linear API key" placeholderTextColor={colors.foregroundMuted} style={styles.input} />
-      <Button icon="Plug" title="Connect Linear" primary disabled={!key.trim()} onPress={() => void run("Connecting Linear", async () => {
-        setConnection(await connect({ apiKey: key.trim() })); setKey(""); await loadIssues();
-      })} />
-      <Button icon="RefreshCw" title="Retry saved connection" onPress={() => void run("Loading connection", async () => {
-        const status = await getStatus({}); setConnection(status);
-        if (status.connected) await loadIssues();
-      })} />
+    {!connection?.connected ? <View style={{ ...t.card, gap: 14 }}>
+      <SectionHeading title="Connect your work" subtitle="Bring your assigned Linear tickets into Paseo." icon="Plug" t={t} />
+      <View style={{ gap: 10 }}>
+        {[
+          "Create a personal API key in Linear → Settings → Security & access.",
+          "Paste it below, or set LINEAR_API_KEY in the daemon environment.",
+          "A read-only key is enough — the plugin never writes to Linear.",
+        ].map((step, index) => <View key={step} style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+          <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
+            <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>{index + 1}</Text>
+          </View>
+          <Text style={{ ...t.body, flex: 1 }}>{step}</Text>
+        </View>)}
+      </View>
+      <Callout t={t} tone="info" message="The key is stored privately on this Paseo host and is shared by clients connected to it. It is never added to ticket context or agent prompts." />
+      <FieldLabel title="Linear API key" icon="KeyRound" t={t} />
+      <TextInput accessibilityLabel="Linear API key" secureTextEntry autoCapitalize="none" autoCorrect={false} value={key} onChangeText={setKey} placeholder="lin_api_…" placeholderTextColor={colors.foregroundMuted} style={t.input} />
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <Button title="Connect Linear" icon="Plug" primary disabled={!key.trim()} onPress={() => void run("Connecting Linear", async () => {
+          setConnection(await connect({ apiKey: key.trim() })); setKey(""); await loadIssues();
+        })} />
+        <Button title="Retry saved connection" icon="RefreshCw" onPress={() => void run("Loading connection", async () => {
+          const status = await getStatus({}); setConnection(status);
+          if (status.connected) await loadIssues();
+        })} />
+      </View>
     </View> : <>
-      {manageConnection && <View style={styles.row}>
-        <Text style={styles.muted}>Connected to Linear{connection.source === "environment" ? " through the host environment" : ""}</Text>
-        {connection.source !== "environment" && <Button icon="Unplug" title="Disconnect" onPress={() => void run("Disconnecting", async () => {
+      {manageConnection && <View style={{ ...t.card, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <View style={{ gap: 3, flex: 1, minWidth: 220 }}>
+          <Text style={t.strong}>Linear connection</Text>
+          <Text style={t.muted}>{connection.source === "environment" ? "Key supplied by the daemon environment (LINEAR_API_KEY)." : "Key saved on this Paseo host."}</Text>
+        </View>
+        {connection.source !== "environment" && <Button title="Disconnect" icon="Unplug" tone="danger" onPress={() => void run("Disconnecting", async () => {
           setConnection(await disconnect({})); setIssues([]); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
         })} />}
       </View>}
-      {selected ? <>
-        <View style={styles.row}>
-          <Button icon="ArrowLeft" title="Assigned tickets" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
-          {/^https:\/\/linear\.app\//.test(selected.url) && <Button icon="ExternalLink" title="Open in Linear" onPress={() => void run("Opening Linear", async () => { await openExternalUrl(selected.url, { platform: layout.platform, linking: Linking }); })} />}
+
+      {selected && current ? <>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Button title="Assigned tickets" icon="ArrowLeft" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
+          {/^https:\/\/linear\.app\//.test(selected.url) && <Button title="Open in Linear" icon="ExternalLink" onPress={() => void run("Opening Linear", async () => { await openExternalUrl(selected.url, { platform: layout.platform, linking: Linking }); })} />}
         </View>
-        <View style={styles.detailLayout}>
-        <View style={{ ...styles.card, flex: layout.compact ? undefined : 1.15, width: layout.compact ? "100%" : undefined, minWidth: 0, borderTopWidth: 3, borderTopColor: colors.accent }}>
-          <View style={{ ...styles.row, justifyContent: "space-between", marginBottom: 6 }}>
-            <View style={styles.row}><Icon name="Ticket" size={15} color={colors.accent} /><Text style={{ ...styles.muted, color: colors.accent, fontWeight: "700" }}>{selected.identifier}</Text></View>
-            <StatusBadge status={(detail?.issue ?? selected).status} theme={theme} />
-          </View>
-          <Text style={{ ...styles.heading, fontSize: 23, lineHeight: 32, letterSpacing: -0.4 }}>{(detail?.issue ?? selected).title}</Text>
-          <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 6 }} />
-          {detailLoading && <ActivityIndicator color={colors.accent} />}
-          {detailError && <><Text style={styles.error}>{detailError}</Text><Button icon="RefreshCw" title="Retry ticket details" onPress={() => setDetailVersion((value) => value + 1)} /></>}
-          {detail && <>
-            <MarkdownPreview markdown={detail.issue.description || "No description provided."} theme={theme} platform={layout.platform} />
-            {detail.warnings.map((warning) => <Text key={warning} style={styles.error}>{warning}</Text>)}
-            <Button icon="FileText" title={showContext ? "Hide agent context" : "Preview agent context"} onPress={() => setShowContext(!showContext)} />
-            {showContext && <ScrollView style={{ maxHeight: 320, backgroundColor: colors.surface0, borderRadius: 10 }} contentContainerStyle={{ padding: 14 }} nestedScrollEnabled><Text selectable style={{ ...styles.muted, fontFamily: "monospace", fontSize: 11 }}>{detail.context}</Text></ScrollView>}
-          </>}
-        </View>
-        {agent ? <View style={{ ...styles.card, flex: layout.compact ? undefined : 1, width: layout.compact ? "100%" : undefined, minWidth: 0 }}>
-          <SectionHeading title="Off to a good start" subtitle="Your agent is ready to work." icon="CheckCircle" theme={theme} />
-          <Text style={styles.text}>The ticket snapshot is included in the agent’s first prompt.</Text>
-          {agent.warnings.map((warning) => <Text key={warning} style={styles.error}>{warning}</Text>)}
-          {navigation ? <Button icon="ArrowUpRight" title="Open agent" primary onPress={() => navigation.openAgent({ agentId: agent.agentId })} /> : <Text selectable style={styles.muted}>Agent ID: {agent.agentId}</Text>}
-        </View> : <View style={{ ...styles.card, flex: layout.compact ? undefined : 1, width: layout.compact ? "100%" : undefined, minWidth: 0 }}>
-          <SectionHeading title="Set your agent up" subtitle="Choose where it works and who takes the lead." icon="Bot" theme={theme} />
-          {optionsLoading && <ActivityIndicator color={colors.accent} />}
-          {optionsError && <Text style={styles.error}>{optionsError}</Text>}
-          <FieldLabel title="Project" icon="Folder" theme={theme} />
-          <ChoicePicker label="Projects" placeholder="Choose a project" options={projects.map((item) => ({ id: item.projectId, label: item.projectCustomName || item.projectDisplayName, description: item.projectRootPath }))}
-            value={projectId} onChange={(id) => { if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} theme={theme} disabled={Boolean(busy) || optionsLoading} />
-          {!optionsLoading && !projects.length && <Text style={styles.muted}>Open a project in Paseo, then reload the choices.</Text>}
-          {project?.projectKind === "git" && <>
-            <FieldLabel title="Base branch" icon="GitBranch" theme={theme} />
-            {branchesLoading && <ActivityIndicator color={colors.accent} />}
-            {branchesError && <Text style={styles.error}>{branchesError}</Text>}
-            <ChoicePicker key={projectId} label="Branches" placeholder="Choose a base branch" options={branches} value={baseBranch} onChange={setBaseBranch} theme={theme} disabled={Boolean(busy) || branchesLoading} />
-            <Text style={styles.muted}>Creates a new ticket branch in its own worktree, starting from this branch. Remote branches use the locally fetched version.</Text>
-            {!branchesLoading && !branches.length && !branchesError && <Text style={styles.muted}>No branches found. The repository needs at least one commit.</Text>}
-            <Button icon="RefreshCw" title="Refresh branches" disabled={branchesLoading} onPress={() => setBranchesVersion((value) => value + 1)} />
-          </>}
-          {project && project.projectKind !== "git" && <Text style={styles.muted}>The agent will work in this project’s directory.</Text>}
-          <View style={{ height: 1, backgroundColor: colors.border, marginTop: 12 }} />
-          <FieldLabel title="Provider" icon="Bot" theme={theme} />
-          <View style={styles.row}>{providerGroups.map((group) => <Button key={group} leading={<ProviderMark provider={group} theme={theme} size={15} />} title={`${group} · ${models.filter((model) => model.provider === group).length}`} chosen={providerGroup === group}
-            onPress={() => { if (group !== providerGroup) { setProviderGroup(group); setProvider(""); setModeId(""); setThinkingOptionId(""); } }} />)}</View>
-          {!optionsLoading && !models.length && <Text style={styles.muted}>Configure an agent provider in Paseo, then reload the choices.</Text>}
-          {providerGroup && <>
-            <FieldLabel title="Model" icon="Cpu" theme={theme} />
-            <ChoicePicker key={providerGroup} label="Models" placeholder="Choose a model" options={models.filter((model) => model.provider === providerGroup)} value={provider} onChange={(id) => {
-              const model = models.find((candidate) => candidate.id === id);
-              setProvider(id); setThinkingOptionId(model?.defaultThinkingOptionId ?? model?.thinkingOptions.find((option) => option.isDefault)?.id ?? "");
-            }} leading={<ProviderMark provider={providerGroup} theme={theme} size={15} />} theme={theme} disabled={Boolean(busy)} />
-            {!!activeModes.length && <>
-              <FieldLabel title="Change mode" icon="SlidersHorizontal" theme={theme} />
-              <ChoicePicker key={`${providerGroup}-modes`} label="Modes" placeholder="Use provider default" options={[{ id: "", label: "Provider default", description: "Use the default mode configured in Paseo." }, ...activeModes]} value={modeId} onChange={setModeId} theme={theme} disabled={Boolean(busy)} />
-            </>}
-            {!!thinkingOptions.length && <>
-              <FieldLabel title="Reasoning" icon="BrainCircuit" theme={theme} />
-              <ChoicePicker key={`${provider}-thinking`} label="Reasoning" placeholder="Choose a reasoning level" options={thinkingOptions} value={thinkingOptionId} onChange={setThinkingOptionId} theme={theme} disabled={Boolean(busy)} />
-              <Text style={styles.muted}>Available reasoning levels come directly from this model’s Paseo provider.</Text>
-            </>}
-          </>}
-          <Button icon="RefreshCw" title="Reload projects and models" disabled={optionsLoading} onPress={() => void loadOptions()} />
-          <FieldLabel title="A little extra direction" icon="MessageSquare" theme={theme} />
-          <TextInput accessibilityLabel="Additional instructions for the agent" editable={!busy} multiline maxLength={10000} value={instructions} onChangeText={setInstructions}
-            placeholder="Additional instructions (optional)" placeholderTextColor={colors.foregroundMuted} style={[styles.input, { minHeight: 80, textAlignVertical: "top" }]} />
-          <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 18, marginTop: 8, gap: 12 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-              <Icon name={canLaunch ? "CheckCircle" : "Circle"} size={14} color={canLaunch ? colors.statusSuccess : colors.foregroundMuted} />
-              <Text style={styles.muted}>{canLaunch ? "Ticket context included. Ready when you are." : "Choose a project, branch and model to get started."}</Text>
+        <View style={{ flexDirection: layout.compact ? "column" : "row", alignItems: "flex-start", gap: 20 }}>
+          <View style={{ ...t.card, gap: 14, flex: layout.compact ? undefined : 1.15, width: layout.compact ? "100%" : undefined, minWidth: 0, borderTopWidth: 3, borderTopColor: colors.accent }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surface2, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 }}>
+                  <Icon name="Ticket" size={13} color={colors.accent} />
+                  <Text style={{ color: colors.accent, fontSize: 12, fontWeight: "700", fontFamily: "monospace" }}>{current.identifier}</Text>
+                </View>
+                <PriorityMark priority={current.priority} t={t} showLabel />
+              </View>
+              <StatusBadge status={current.status} t={t} />
             </View>
-            <Button icon="Rocket" title="Start agent with ticket" primary disabled={!canLaunch} onPress={launch} />
+            <Text style={t.cardTitle}>{current.title}</Text>
+
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 14, backgroundColor: colors.surface0, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14 }}>
+              <MetaItem icon="Folder" label="Project" value={current.project || "—"} t={t} />
+              <MetaItem icon="Users" label="Team" value={current.team || "—"} t={t} />
+              <MetaItem icon="Tag" label="Labels" chips={current.labels} t={t} />
+              <MetaItem icon="Calendar" label="Created" value={formatIssueDate(current.createdAt)} t={t} />
+              <MetaItem icon="Clock" label="Updated" value={formatRelativeDate(current.updatedAt)} t={t} />
+            </View>
+
+            <Divider t={t} spaced />
+            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <FieldLabel title="Description" icon="FileText" t={t} />
+              {detailLoading && <ActivityIndicator color={colors.accent} size="small" />}
+            </View>
+            {detailLoading && <View style={{ gap: 9 }}><Skeleton t={t} width="100%" height={12} /><Skeleton t={t} width="92%" height={12} /><Skeleton t={t} width="64%" height={12} /></View>}
+            {detailError && <Callout t={t} tone="danger" message={detailError} action={<Button title="Retry" icon="RefreshCw" size="sm" onPress={() => setDetailVersion((value) => value + 1)} />} />}
+            {detail && <>
+              <MarkdownPreview markdown={detail.issue.description || "No description provided."} t={t} platform={layout.platform} />
+              {detail.warnings.map((warning) => <Callout key={warning} t={t} message={warning} />)}
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                <Button title={showContext ? "Hide agent context" : "Preview agent context"} icon="FileText" onPress={() => setShowContext(!showContext)} />
+                <Button title={contextCopied ? "Copied" : "Copy context"} icon={contextCopied ? "Check" : "Copy"} onPress={copyContext} />
+              </View>
+              {showContext && <ScrollView style={{ maxHeight: 320, backgroundColor: colors.surface0, borderRadius: 10, borderWidth: 1, borderColor: colors.border }} contentContainerStyle={{ padding: 14 }} nestedScrollEnabled>
+                <Text selectable style={t.mono}>{detail.context}</Text>
+              </ScrollView>}
+            </>}
           </View>
-        </View>}
+
+          {agent ? <View style={{ ...t.card, gap: 14, flex: layout.compact ? undefined : 1, width: layout.compact ? "100%" : undefined, minWidth: 0 }}>
+            <SectionHeading title="Agent started" subtitle="The ticket snapshot is in its first prompt." icon="CircleCheck" t={t} />
+            {agent.warnings.map((warning) => <Callout key={warning} t={t} message={warning} />)}
+            {navigation
+              ? <Button title="Open agent" icon="ArrowUpRight" primary stretch onPress={() => navigation.openAgent({ agentId: agent.agentId })} />
+              : <Text selectable style={t.mono}>Agent ID: {agent.agentId}</Text>}
+            <Button title="Start another agent" icon="RotateCcw" onPress={() => { setAgent(null); launchRequest.current = null; }} />
+          </View> : <View style={{ ...t.card, gap: 14, flex: layout.compact ? undefined : 1, width: layout.compact ? "100%" : undefined, minWidth: 0 }}>
+            <SectionHeading title="Set your agent up" subtitle="Choose where it works and who takes the lead." icon="Bot" t={t} />
+            {optionsError && <Callout t={t} message={optionsError} action={<Button title="Reload" icon="RefreshCw" size="sm" onPress={() => void loadOptions()} />} />}
+
+            <FieldLabel title="Workspace" icon="Folder" hint="where the agent runs" t={t} />
+            <ChoicePicker label="Projects" icon="Folder" placeholder="Choose a project" options={projects.map((item) => ({ id: item.projectId, label: item.projectCustomName || item.projectDisplayName, description: item.projectRootPath }))}
+              value={projectId} onChange={(id) => { if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} t={t} disabled={Boolean(busy) || optionsLoading} />
+            {!optionsLoading && !projects.length && <Callout t={t} tone="info" message="Open a project in Paseo, then reload the choices." />}
+            {project?.projectKind === "git" && <>
+              <FieldLabel title="Base branch" icon="GitBranch" hint="new worktree starts here" t={t} />
+              <ChoicePicker label="Branches" icon="GitBranch" placeholder="Choose a base branch" options={branches} value={baseBranch} onChange={setBaseBranch} t={t} disabled={Boolean(busy) || branchesLoading} />
+              {branchesLoading && <ActivityIndicator color={colors.accent} />}
+              {branchesError && <Callout t={t} tone="danger" message={branchesError} />}
+              {!branchesLoading && !branches.length && !branchesError && <Callout t={t} tone="info" message="No branches found. The repository needs at least one commit." />}
+              <Text style={t.muted}>Creates a new ticket branch in its own worktree from this branch. Remote branches use the locally fetched version.</Text>
+              <Button title="Refresh branches" icon="RefreshCw" size="sm" disabled={branchesLoading} onPress={() => setBranchesVersion((value) => value + 1)} />
+            </>}
+            {project && project.projectKind !== "git" && <Text style={t.muted}>The agent will work in this project’s directory.</Text>}
+
+            <Divider t={t} spaced />
+            <FieldLabel title="Provider" icon="Bot" hint={`${models.length} model${models.length === 1 ? "" : "s"} available`} t={t} />
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {providerGroups.map((group) => <Button key={group} leading={<ProviderMark provider={group} theme={theme} size={15} />} title={`${group} · ${models.filter((model) => model.provider === group).length}`} chosen={providerGroup === group}
+                onPress={() => { if (group !== providerGroup) { setProviderGroup(group); setProvider(""); setModeId(""); setThinkingOptionId(""); } }} />)}
+            </View>
+            {optionsLoading && <View style={{ gap: 9 }}><Skeleton t={t} width="40%" height={12} /><Skeleton t={t} width="100%" height={48} radius={10} /></View>}
+            {!optionsLoading && !models.length && <Callout t={t} tone="info" message="Configure an agent provider in Paseo, then reload the choices." />}
+            {providerGroup && <>
+              <FieldLabel title="Model" icon="Cpu" t={t} />
+              <ChoicePicker label="Models" icon="Cpu" placeholder="Choose a model" options={models.filter((model) => model.provider === providerGroup)} value={provider} onChange={(id) => {
+                const model = models.find((candidate) => candidate.id === id);
+                setProvider(id); setThinkingOptionId(model?.defaultThinkingOptionId ?? model?.thinkingOptions.find((option) => option.isDefault)?.id ?? "");
+              }} leading={<ProviderMark provider={providerGroup} theme={theme} size={15} />} t={t} disabled={Boolean(busy)} />
+              {!!activeModes.length && <>
+                <FieldLabel title="Change mode" icon="SlidersHorizontal" t={t} />
+                <ChoicePicker label="Modes" icon="SlidersHorizontal" placeholder="Use provider default" options={[{ id: "", label: "Provider default", description: "Use the default mode configured in Paseo." }, ...activeModes]} value={modeId} onChange={setModeId} t={t} disabled={Boolean(busy)} />
+              </>}
+              {!!thinkingOptions.length && <>
+                <FieldLabel title="Reasoning" icon="BrainCircuit" t={t} />
+                <ChoicePicker label="Reasoning" icon="BrainCircuit" placeholder="Choose a reasoning level" options={thinkingOptions} value={thinkingOptionId} onChange={setThinkingOptionId} t={t} disabled={Boolean(busy)} />
+                <Text style={t.muted}>Reasoning levels come directly from this model’s Paseo provider.</Text>
+              </>}
+            </>}
+            <Button title="Reload projects and models" icon="RefreshCw" size="sm" disabled={optionsLoading} onPress={() => void loadOptions()} />
+
+            <Divider t={t} spaced />
+            <FieldLabel title="A little extra direction" icon="MessageSquare" hint="optional" t={t} />
+            <TextInput accessibilityLabel="Additional instructions for the agent" editable={!busy} multiline maxLength={10000} value={instructions} onChangeText={setInstructions}
+              placeholder="Anything the agent should know before it starts…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.input, minHeight: 84, textAlignVertical: "top" }} />
+
+            <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 16, marginTop: 4, gap: 12 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+                <Icon name={canLaunch ? "CircleCheck" : "CircleDashed"} size={14} color={canLaunch ? colors.statusSuccess : colors.foregroundMuted} />
+                <Text style={t.muted}>{canLaunch ? "Ticket context included. Ready when you are." : missingRequirement}</Text>
+              </View>
+              <Button title="Start agent with ticket" icon="Rocket" primary stretch disabled={!canLaunch} onPress={launch} />
+            </View>
+          </View>}
         </View>
       </> : <>
-        <View style={{ ...styles.card, gap: 16 }}>
-          <View style={{ ...styles.input, padding: 0, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <Icon name="Search" size={18} color={colors.foregroundMuted} />
-            <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Find your next ticket…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 14, fontSize: 14, flex: 1, minWidth: 0 }} />
+        <View style={{ ...t.card, gap: 16 }}>
+          <View style={{ ...t.input, paddingVertical: 0, flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <Icon name="Search" size={17} color={colors.foregroundMuted} />
+            <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Search by title, ID, project, team or label…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 12, fontSize: 14, flex: 1, minWidth: 0 }} />
+            {!!query && <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => setQuery("")}><Icon name="X" size={15} color={colors.foregroundMuted} /></Pressable>}
           </View>
-          <View style={styles.row}>
-            <View style={{ width: 62, flexDirection: "row", alignItems: "center", gap: 6 }}><Icon name="ListFilter" size={13} color={colors.foregroundMuted} /><Text style={styles.muted}>Status</Text></View>
-            <Button title={`All · ${issues.length}`} chosen={status === null} onPress={() => setStatus(null)} />
-            {statuses.map(([name, count]) => <Button key={name} title={`${name} · ${count}`} chosen={status === name} onPress={() => setStatus(status === name ? null : name)} />)}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            <FieldLabel title="Status" icon="ListFilter" t={t} />
+            <Button size="sm" title={`All · ${issues.length}`} chosen={status === null} onPress={() => setStatus(null)} />
+            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, t) }} />}
+              onPress={() => setStatus(status === name ? null : name)} />)}
           </View>
-          <View style={styles.row}>
-            <View style={{ width: 62, flexDirection: "row", alignItems: "center", gap: 6 }}><Icon name="ArrowDownUp" size={13} color={colors.foregroundMuted} /><Text style={styles.muted}>Sort</Text></View>
-            <Button icon="Clock" title="Updated" chosen={dateField === "updatedAt"} onPress={() => setDateField("updatedAt")} />
-            <Button icon="Calendar" title="Created" chosen={dateField === "createdAt"} onPress={() => setDateField("createdAt")} />
-            <Button icon={dateDirection === "newest" ? "ArrowDown" : "ArrowUp"} title={dateDirection === "newest" ? "Newest first" : "Oldest first"} onPress={() => setDateDirection(dateDirection === "newest" ? "oldest" : "newest")} />
-            {!!(status || query) && <Button icon="X" title="Clear filters" onPress={() => { setStatus(null); setQuery(""); }} />}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+            <FieldLabel title="Sort" icon="ArrowDownUp" t={t} />
+            <Segmented t={t} label="Sort field" value={dateField} onChange={(value) => setDateField(value)}
+              options={[{ value: "updatedAt" as DateField, label: "Updated", icon: "Clock" }, { value: "createdAt" as DateField, label: "Created", icon: "Calendar" }]} />
+            <Segmented t={t} label="Sort direction" value={dateDirection} onChange={(value) => setDateDirection(value)}
+              options={[{ value: "newest" as DateDirection, label: "Newest", icon: "ArrowDown" }, { value: "oldest" as DateDirection, label: "Oldest", icon: "ArrowUp" }]} />
+            {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { setStatus(null); setQuery(""); }} />}
           </View>
         </View>
-        <View style={{ ...styles.row, justifyContent: "space-between" }}>
-          <Text style={{ ...styles.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
-          <Text style={styles.muted}>{dateField === "updatedAt" ? "Last updated" : "Date created"} · {dateDirection === "newest" ? "newest first" : "oldest first"}</Text>
+
+        <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
+          <Text style={t.muted}>Sorted by {dateField === "updatedAt" ? "last updated" : "date created"} · {dateDirection === "newest" ? "newest first" : "oldest first"}</Text>
         </View>
-        {!busy && !visible.length && <View style={{ ...styles.card, paddingVertical: 32, alignItems: "center" }}>
-          <Icon name={issues.length ? "Search" : "CheckCircle"} size={30} color={colors.accent} />
-          <Text style={styles.heading}>{issues.length ? "No matching tickets" : "You’re all caught up"}</Text>
-          <Text style={styles.muted}>{issues.length ? "Try another status or search term." : "Your assigned tickets will appear here."}</Text>
-          {!!(status || query) && <Button icon="X" title="Clear filters" onPress={() => { setStatus(null); setQuery(""); }} />}
-        </View>}
-        {!!visible.length && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
-          {!layout.compact && <View style={{ ...styles.row, paddingHorizontal: 18, paddingVertical: 12, backgroundColor: colors.surface2, flexWrap: "nowrap" }}>
-            <Text style={{ ...styles.muted, width: 90 }}>Issue</Text>
-            <Text style={{ ...styles.muted, flex: 1 }}>Title / Project</Text>
-            <Text style={{ ...styles.muted, width: 125 }}>Status</Text>
-            <Text style={{ ...styles.muted, width: 110, textAlign: "right" }}>{dateField === "updatedAt" ? "Updated" : "Created"}</Text>
+
+        {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
+          description={issues.length ? "Try another status or a different search term." : "Assigned tickets will appear here as soon as Linear has them."}
+          action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { setStatus(null); setQuery(""); }} /> : undefined} />}
+
+        {(!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+          {!layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 11, backgroundColor: colors.surface2 }}>
+            <View style={{ width: 20 }} />
+            <Text style={{ ...t.eyebrow, width: 82 }}>Issue</Text>
+            <Text style={{ ...t.eyebrow, flex: 1 }}>Title</Text>
+            <Text style={{ ...t.eyebrow, width: 130 }}>Status</Text>
+            <Text style={{ ...t.eyebrow, width: 88, textAlign: "right" }}>{dateField === "updatedAt" ? "Updated" : "Created"}</Text>
+            <View style={{ width: 14 }} />
           </View>}
-          {visible.map((issue, index) => <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${dateField === "updatedAt" ? "updated" : "created"} ${formatIssueDate(issue[dateField])}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
-            style={({ pressed }) => ({ paddingHorizontal: 18, paddingVertical: layout.compact ? 14 : 16, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed ? colors.surface2 : colors.surface1, gap: 8 })}>
-            <View style={{ ...styles.row, flexWrap: "nowrap", alignItems: "center" }}>
-              {!layout.compact && <Text style={{ ...styles.muted, color: colors.accent, width: 90 }}>{issue.identifier}</Text>}
-              <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
-                {layout.compact && <Text style={{ ...styles.muted, color: colors.accent }}>{issue.identifier}</Text>}
-                <Text numberOfLines={layout.compact ? 2 : 1} style={{ ...styles.text, fontWeight: "600", fontSize: 15 }}>{issue.title}</Text>
-                {!!(issue.project || issue.team || issue.labels.length || (issue.priority && issue.priority !== "No priority")) && <Text numberOfLines={1} style={styles.muted}>
-                  {[issue.project, issue.team, ...issue.labels, issue.priority !== "No priority" ? issue.priority : ""].filter(Boolean).join(" · ")}
-                </Text>}
+          {ticketsLoading && !visible.length && [0, 1, 2, 3].map((row) => <View key={row} style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 18, borderTopWidth: row ? 1 : 0, borderTopColor: colors.surface2 }}>
+            <Skeleton t={t} width={14} height={14} radius={7} />
+            <Skeleton t={t} width={64} height={12} />
+            <Skeleton t={t} width={`${52 + row * 8}%`} height={14} />
+            <View style={{ flex: 1 }} />
+            <Skeleton t={t} width={86} height={18} radius={9} />
+          </View>)}
+          {visible.map((issue, index) => {
+            const isHovered = hovered === issue.id;
+            return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${formatRelativeDate(issue[dateField])}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
+              onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
+              style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
+                {!layout.compact && <View style={{ width: 20, alignItems: "center" }}><PriorityMark priority={issue.priority} t={t} /></View>}
+                {!layout.compact && <Text style={{ color: colors.accent, width: 82, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>}
+                <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
+                  {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <PriorityMark priority={issue.priority} t={t} />
+                    <Text style={{ color: colors.accent, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>
+                  </View>}
+                  <Text numberOfLines={layout.compact ? 2 : 1} style={{ ...t.strong, fontSize: 15, lineHeight: 21 }}>{issue.title}</Text>
+                  {metaLine(issue)}
+                </View>
+                {!layout.compact && <>
+                  <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} t={t} /></View>
+                  <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField])}</Text>
+                  <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
+                </>}
+                {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
               </View>
-              {!layout.compact && <>
-                <View style={{ width: 125 }}><StatusBadge status={issueStatus(issue)} theme={theme} /></View>
-                <Text style={{ ...styles.muted, width: 110, textAlign: "right" }}>{formatIssueDate(issue[dateField])}</Text>
-              </>}
-            </View>
-            {layout.compact && <View style={{ ...styles.row, justifyContent: "space-between" }}>
-              <StatusBadge status={issueStatus(issue)} theme={theme} /><Text style={styles.muted}>{formatIssueDate(issue[dateField])}</Text>
-            </View>}
-          </Pressable>)}
+              {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <StatusBadge status={issueStatus(issue)} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
+              </View>}
+            </Pressable>;
+          })}
         </View>}
-        {cursor && <View style={{ ...styles.card, alignItems: "center" }}>
-          <Text style={styles.muted}>Filters and sorting apply to loaded tickets. Load all to include every assignment.</Text>
-          <View style={styles.row}>
-            <Button icon="ChevronDown" title="Load more" onPress={() => void run("Loading tickets", async () => { await loadIssues(cursor); })} />
-            <Button icon="Layers" title="Load all tickets" onPress={() => void run("Loading all tickets", loadAllIssues)} />
+
+        {cursor && <View style={{ ...t.card, alignItems: "center", gap: 10 }}>
+          <Text style={{ ...t.muted, textAlign: "center" }}>Filters and sorting apply to loaded tickets. Load all to include every assignment.</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+            <Button title="Load more" icon="ChevronDown" onPress={() => void run("Loading tickets", async () => { await loadIssues(cursor); })} />
+            <Button title="Load all tickets" icon="Layers" onPress={() => void run("Loading all tickets", loadAllIssues)} />
           </View>
         </View>}
       </>}
     </>}
-  </ScrollView>;
+  </ScrollView></SurfaceProvider>;
 }

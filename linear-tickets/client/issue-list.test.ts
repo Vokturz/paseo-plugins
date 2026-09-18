@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeIssue } from "../server/context";
-import { filterIssues, formatIssueDate, statusCounts } from "./issue-list";
+import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, priorityTone, statusCounts, statusTone } from "./issue-list";
 
 const tickets = [
   normalizeIssue({ id: "a", title: "Fix login", status: "In Progress", labels: ["mobile"], updatedAt: "2026-09-18T10:00:00Z", createdAt: "2026-01-01T00:00:00Z" }),
@@ -29,4 +29,39 @@ test("missing statuses and dates are visible, with created dates preserved by no
   assert.deepEqual(statusCounts([normalizeIssue({ id: "empty", title: "No status" })]), [["No status", 1]]);
   assert.equal(formatIssueDate("invalid"), "No date");
   assert.equal(tickets[0].createdAt, "2026-01-01T00:00:00Z");
+});
+
+test("workflow statuses map to visual tones without hard-coding a single workflow", () => {
+  assert.equal(statusTone("In Progress"), "active");
+  assert.equal(statusTone("Waiting for review"), "review");
+  assert.equal(statusTone("Backlog"), "backlog");
+  assert.equal(statusTone("Done"), "done");
+  assert.equal(statusTone("Canceled"), "canceled");
+  assert.equal(statusTone("Blocked on vendor"), "neutral");
+  assert.equal(statusTone(""), "neutral");
+});
+
+test("priority accepts labels and Linear's numeric values", () => {
+  assert.equal(formatPriority("1"), "Urgent");
+  assert.equal(formatPriority("0"), "No priority");
+  assert.equal(formatPriority("High"), "High");
+  assert.equal(priorityTone("Urgent"), "urgent");
+  assert.equal(priorityTone("2"), "high");
+  assert.equal(priorityTone("Medium"), "medium");
+  assert.equal(priorityTone("4"), "low");
+  assert.equal(priorityTone("No priority"), "none");
+  assert.equal(priorityTone(""), "none");
+  assert.equal(hasPriority("Low"), true);
+  assert.equal(hasPriority("No priority"), false);
+});
+
+test("relative dates stay short and fall back to a calendar date", () => {
+  const now = Date.parse("2026-09-18T12:00:00Z");
+  assert.equal(formatRelativeDate("2026-09-18T11:59:40Z", now), "just now");
+  assert.equal(formatRelativeDate("2026-09-18T11:15:00Z", now), "45m ago");
+  assert.equal(formatRelativeDate("2026-09-18T09:00:00Z", now), "3h ago");
+  assert.equal(formatRelativeDate("2026-09-15T12:00:00Z", now), "3d ago");
+  assert.equal(formatRelativeDate("2025-01-05T12:00:00Z", now), "Jan 5, 2025");
+  assert.equal(formatRelativeDate("invalid", now), "No date");
+  assert.equal(formatRelativeDate("2026-09-18T12:30:00Z", now), "30m from now");
 });

@@ -29,3 +29,54 @@ export function formatIssueDate(value: string) {
     ? date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
     : "No date";
 }
+
+// Linear workflows are user-defined, so tone matching stays generic: keywords, not exact names.
+export type StatusTone = "done" | "canceled" | "active" | "review" | "backlog" | "neutral";
+
+export function statusTone(status: string): StatusTone {
+  const name = status.trim().toLowerCase();
+  if (!name || name === "no status") return "neutral";
+  if (/(^|\W)(done|complete|completed|closed|merged|deployed|released|shipped|resolved)(\W|$)/.test(name)) return "done";
+  if (/(cancel|declin|duplicate|rejected|abandon|archiv|won'?t)/.test(name)) return "canceled";
+  if (/(review|verify|verification|qa|test|approval|approved|staging)/.test(name)) return "review";
+  if (/(progress|started|doing|active|working|dev(el)?|implement)/.test(name)) return "active";
+  if (/(backlog|icebox|triage|todo|to do|planned|planning|next|ready|queue)/.test(name)) return "backlog";
+  return "neutral";
+}
+
+export type PriorityTone = "urgent" | "high" | "medium" | "low" | "none";
+
+// Linear returns priorities as labels ("Urgent") or numbers ("1"); normalize both.
+const PRIORITY_LABELS: Record<string, string> = { "0": "No priority", "1": "Urgent", "2": "High", "3": "Medium", "4": "Low" };
+
+export function formatPriority(priority: string) {
+  const value = priority.trim();
+  if (!value) return "No priority";
+  return PRIORITY_LABELS[value] ?? value;
+}
+
+export function priorityTone(priority: string): PriorityTone {
+  const name = formatPriority(priority).toLowerCase();
+  if (/(urgent|critical|blocker|p0|asap)/.test(name)) return "urgent";
+  if (/(high|important|major|p1)/.test(name)) return "high";
+  if (/(medium|normal|moderate|p2)/.test(name)) return "medium";
+  if (/(low|minor|trivial|p3)/.test(name)) return "low";
+  return "none";
+}
+
+/** Priority is only worth a badge when Linear actually set one. */
+export const hasPriority = (priority: string) => priorityTone(priority) !== "none";
+
+export function formatRelativeDate(value: string, now: number = Date.now()) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "No date";
+  const delta = now - time;
+  const future = delta < 0;
+  const abs = Math.abs(delta);
+  const suffix = future ? "from now" : "ago";
+  if (abs < 45_000) return "just now";
+  if (abs < 3_600_000) return `${Math.round(abs / 60_000)}m ${suffix}`;
+  if (abs < 86_400_000) return `${Math.round(abs / 3_600_000)}h ${suffix}`;
+  if (abs < 2_592_000_000) return `${Math.round(abs / 86_400_000)}d ${suffix}`;
+  return formatIssueDate(value);
+}

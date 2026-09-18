@@ -36,9 +36,16 @@ paseo plugin reload linear-tickets
 
 Tickets load in pages of 50. Use the status chips to filter by your Linear workflow
 statuses, and search by title, ID, project, team or label. Sort by **Updated** or
-**Created**, then toggle **Newest first / Oldest first**. Missing dates sort last.
+**Created**, then toggle **Newest / Oldest**. Missing dates sort last.
 Counts, filters and sorting apply to loaded tickets; choose **Load all tickets** to
 include all assignments. Archived tickets are excluded.
+
+Rows show the ticket's priority, a status colour and icon for its workflow state,
+label chips and a relative timestamp ("3h ago"), with the absolute date in the
+accessibility label. Status colours are matched by keyword, so custom Linear
+workflows get a sensible tone instead of falling back to grey. While tickets load,
+placeholder rows stand in for the table so the layout does not jump.
+
 For Git projects, the plugin creates a new ticket branch and a dedicated worktree
 from the selected base branch. Your existing checkout is not switched. Remote
 branches use their locally fetched state; fetch in the project first if you need
@@ -50,8 +57,13 @@ returned links. Linked documents and attachments are not downloaded. If comments
 are unavailable, the preview and agent prompt say so. Context over 200,000 characters
 is rejected rather than silently truncated.
 
-The ticket preview renders HTTPS images linked with standard Markdown image syntax,
-interactive HTTPS Markdown links, inline code, and fenced code blocks.
+The ticket preview shows the ticket's project, team, labels, priority and dates, then
+renders the description as Markdown: headings, bullet and numbered lists, task
+checkboxes, pipe tables, quotes, dividers, bold text, inline code and fenced code
+blocks. Tables scroll horizontally when they are too wide and keep their column
+alignment. Code blocks carry a copy button, and **Copy context** copies the exact
+JSON snapshot that will be sent to the agent. HTTPS images linked with standard
+Markdown image syntax and interactive HTTPS links are rendered too.
 Images are loaded by the Paseo client only for display and are not downloaded into the
 agent's workspace or added to its prompt. Provider badges, available modes, and reasoning
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
