@@ -27,12 +27,19 @@ export function ActionButton({ title, icon, leading, onPress, theme, primary = f
   </Pressable>;
 }
 
+// Brand marks ship their own colors, so they sit on a neutral chip instead of the accent fill.
+export function BrandMark({ brand, label, theme, size = 18, radius }: { brand: string; label?: string; theme: Theme; size?: number; radius?: number }) {
+  const uri = providerPng[brand];
+  const box = size + 8;
+  return <View style={{ width: box, height: box, borderRadius: radius ?? box / 2, backgroundColor: theme.colors.surface2, alignItems: "center", justifyContent: "center" }}>
+    {uri ? <Image accessibilityLabel={label ?? brand} source={{ uri }} resizeMode="contain" style={{ width: size, height: size }} /> : <Icon name="Bot" size={size} color={theme.colors.foregroundMuted} />}
+  </View>;
+}
+
 export function ProviderMark({ provider, theme, size = 18 }: { provider: string; theme: Theme; size?: number }) {
   const normalized = provider.toLowerCase();
-  const brand = Object.entries(providerPng).find(([name]) => normalized.includes(name))?.[1];
-  return <View style={{ width: size + 8, height: size + 8, borderRadius: (size + 8) / 2, backgroundColor: theme.colors.surface2, alignItems: "center", justifyContent: "center" }}>
-    {brand ? <Image accessibilityLabel={provider} source={{ uri: brand }} resizeMode="contain" style={{ width: size, height: size }} /> : <Icon name="Bot" size={size} color={theme.colors.foregroundMuted} />}
-  </View>;
+  const brand = Object.keys(providerPng).find((name) => normalized.includes(name));
+  return <BrandMark brand={brand ?? ""} label={provider} theme={theme} size={size} />;
 }
 
 export function SectionHeading({ title, subtitle, icon, theme }: { title: string; subtitle?: string; icon: string; theme: Theme }) {

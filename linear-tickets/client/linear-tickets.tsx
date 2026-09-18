@@ -8,7 +8,7 @@ import { filterIssues, formatIssueDate, issueStatus, statusCounts, type DateDire
 
 import { ChoicePicker } from "./choice-picker";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { ActionButton, FieldLabel, ProviderMark, SectionHeading, StatusBadge } from "./ui";
+import { ActionButton, BrandMark, FieldLabel, ProviderMark, SectionHeading, StatusBadge } from "./ui";
 import { MarkdownPreview } from "./markdown-preview";
 
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
@@ -203,8 +203,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={styles.content}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 18, paddingBottom: 22, borderBottomWidth: 1, borderBottomColor: colors.border }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 16, flex: 1, minWidth: 230 }}>
-        <View style={{ width: 50, height: 50, borderRadius: 16, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center" }}>
-          <Icon name="Ticket" size={26} color={colors.accentForeground} />
+        <View style={{ width: 50, height: 50, borderRadius: 16, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
+          <BrandMark brand="linear" label="Linear" theme={theme} size={28} radius={16} />
         </View>
         <View style={{ gap: 4, flex: 1 }}>
           <Text style={{ color: colors.foregroundMuted, fontSize: 10, fontWeight: "700", letterSpacing: 2 }}>LINEAR / MY WORK</Text>
