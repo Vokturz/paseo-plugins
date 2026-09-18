@@ -29,6 +29,7 @@ export function normalizeIssue(value: unknown): Issue {
     url: label(issue.url),
     status: label(issue.status ?? issue.state),
     statusType: state ? label(state.type) : "",
+    branchName: label(issue.branchName),
     priority: label(issue.priorityLabel ?? issue.priority),
     project: label(issue.project),
     description: label(issue.description),

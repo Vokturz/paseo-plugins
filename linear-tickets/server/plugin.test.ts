@@ -8,7 +8,7 @@ import contribute from "../index.server";
 import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOptions } from "@getpaseo/client";
 import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships } from "./context";
 import { Credentials } from "./credentials";
-import { Launcher } from "./launch";
+import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
 import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, type Post } from "./linear";
 
@@ -425,6 +425,32 @@ test("a missing project cannot create an agent", async () => {
 });
 
 
+test("safeBranchName accepts canonical Linear names and rejects unsafe git refs", () => {
+  assert.equal(safeBranchName("victor/ow-1748-define-a-pr-template"), "victor/ow-1748-define-a-pr-template");
+  assert.equal(safeBranchName("  main  "), "main");
+  assert.equal(safeBranchName(""), null);
+  assert.equal(safeBranchName("   "), null);
+  assert.equal(safeBranchName(null), null);
+  assert.equal(safeBranchName(42), null);
+  assert.equal(safeBranchName("bad name"), null);
+  assert.equal(safeBranchName("a..b"), null);
+  assert.equal(safeBranchName("a~1"), null);
+  assert.equal(safeBranchName("a^b"), null);
+  assert.equal(safeBranchName("a:b"), null);
+  assert.equal(safeBranchName("a?b"), null);
+  assert.equal(safeBranchName("a*b"), null);
+  assert.equal(safeBranchName("a[b]"), null);
+  assert.equal(safeBranchName("a\\b"), null);
+  assert.equal(safeBranchName("a\u0000b"), null);
+  assert.equal(safeBranchName("/leading"), null);
+  assert.equal(safeBranchName(".hidden"), null);
+  assert.equal(safeBranchName("trailing/"), null);
+  assert.equal(safeBranchName("trailing."), null);
+  assert.equal(safeBranchName("@{u}"), null);
+  assert.equal(safeBranchName("branch.lock"), null);
+  assert.equal(safeBranchName(`long-${"x".repeat(250)}`), null);
+});
+
 test("Git launches create a new ticket worktree from the chosen project and base branch", async () => {
   let workspaces = 0;
   const launcher = new Launcher({ detail: async () => detail }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
@@ -438,6 +464,60 @@ test("Git launches create a new ticket worktree from the chosen project and base
   await launcher.start(request, paseo);
   assert.equal(workspaces, 1);
   await assert.rejects(launcher.start({ ...request, baseBranch: "refs/heads/other" }, paseo), /already been used/);
+});
+
+test("Git launches use Linear's canonical branch name when present and safe", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748-define-a-pr-template-in-ow-back" } };
+  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
+    assert.deepEqual(options.source, { kind: "worktree", projectId: "project-1", cwd: "/repo", action: "branch-off", baseBranch: "refs/remotes/origin/main", branchName: "victor/ow-1748-define-a-pr-template-in-ow-back" });
+  });
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  await launcher.start(request, paseo);
+});
+
+test("unsafe Linear branch names fall back to the synthesized slug", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "bad name~1" } };
+  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
+    assert.equal((options.source as { branchName?: string }).branchName, "eng-42-5f6f1154");
+  });
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  await launcher.start(request, paseo);
+});
+
+test("a colliding Linear branch name is retried exactly once with the request suffix", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748" } };
+  const attempts: PaseoWorkspaceCreateOptions[] = [];
+  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = {
+    projects: { list: async () => ({ projects: [{ projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }] }) },
+    workspaces: { create: async (options: PaseoWorkspaceCreateOptions) => {
+      attempts.push(options);
+      if (attempts.length === 1) throw new Error("fatal: a branch named 'victor/ow-1748' already exists");
+      return { agents: { create: async () => ({ id: "agent-1" }) } };
+    } },
+  } as unknown as PaseoApi;
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  const result = await launcher.start(request, paseo);
+  assert.equal(result.agentId, "agent-1");
+  assert.equal(attempts.length, 2);
+  assert.equal((attempts[0].source as { branchName?: string }).branchName, "victor/ow-1748");
+  assert.equal((attempts[1].source as { branchName?: string }).branchName, "victor/ow-1748-5f6f1154");
+  assert.equal(attempts[1].requestId, "5f6f1154-5838-4439-b981-b3c9d9831488-workspace-retry");
+});
+
+test("non-collision workspace failures are never retried", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748" } };
+  let attempts = 0;
+  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = {
+    projects: { list: async () => ({ projects: [{ projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }] }) },
+    workspaces: { create: async () => { attempts++; throw new Error("network connection lost"); } },
+  } as unknown as PaseoApi;
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  await assert.rejects(launcher.start(request, paseo), /could not be confirmed/);
+  assert.equal(attempts, 1);
 });
 
 test("removed or missing base branches fail before creating a workspace", async () => {

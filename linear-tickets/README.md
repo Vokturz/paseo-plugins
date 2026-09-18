@@ -48,8 +48,13 @@ names such as "In Review" get the right tone in any workspace; keyword matching 
 the state name remains as a fallback for categories that are not recognised. While tickets load,
 placeholder rows stand in for the table so the layout does not jump.
 
-For Git projects, the plugin creates a new ticket branch and a dedicated worktree
-from the selected base branch. Your existing checkout is not switched. Remote
+For Git projects, the plugin creates a dedicated worktree from the selected base
+branch, using Linear's own branch name for the ticket (which respects your workspace's
+branch-format setting) so Linear's GitHub integration keeps matching branches to issues.
+If that name is missing or not a safe git ref, a `<ticket id>–<request id>` fallback is
+used instead. When the branch already exists — for example a second launch of the same
+ticket — the worktree is created once more with a short request-id suffix appended.
+Your existing checkout is not switched. Remote
 branches use their locally fetched state; fetch in the project first if you need
 the newest remote commits. Projects without Git use their project directory.
 

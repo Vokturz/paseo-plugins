@@ -86,6 +86,7 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     description
     url
     state { name type }
+    branchName
     priorityLabel
     project { id name identifier url }
     team { id name key }
