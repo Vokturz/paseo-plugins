@@ -10,7 +10,7 @@ import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relat
 import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
-import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, listIssueFilter, type Post } from "./linear";
+import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, TEAM_STATES_QUERY, UPDATE_ISSUE_STATE_QUERY, resolveStartedState, listIssueFilter, type Post, type TeamState } from "./linear";
 import { countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
@@ -33,13 +33,15 @@ const comment = {
   id: "comment-1", body: "Regression on mobile", createdAt: "2025-01-02T01:00:00.000Z",
   url: "https://linear.app/example/issue/ENG-42#comment-1", user: { name: "Tofu" },
 };
-const detail = { issue: normalizeIssue(rawIssue), context: buildContext(rawIssue, [comment]), warnings: [] };
-const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
+const detail = { issue: normalizeIssue(rawIssue), teamId: "team-1", context: buildContext(rawIssue, [comment]), warnings: [] };
+const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", markInProgress: false, requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
+// Test fakes that do not exercise the state transition: a no-op stub keeps the contract strict.
+const noMark = { markInProgress: async () => ({ changed: false }) };
 
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.get-settings", "linear.set-settings", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -195,7 +197,7 @@ test("relationships normalize relations and inverse relations into directed, de-
 
 test("prompts render a relationships block above the snapshot only when the ticket has relationships", () => {
   const inverseOnly = { ...rawIssue, relations: { nodes: [] }, inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] } };
-  const withRelations = { issue: normalizeIssue(inverseOnly), context: buildContext(inverseOnly, []), warnings: [] };
+  const withRelations = { issue: normalizeIssue(inverseOnly), teamId: null, context: buildContext(inverseOnly, []), warnings: [] };
   const prompt = buildPrompt(withRelations, "");
   assert.ok(prompt.includes("Relationships:\n- related to OW-1732: Other ticket"));
   assert.ok(prompt.indexOf("Relationships:") < prompt.indexOf("Linear ticket snapshot (JSON):"));
@@ -203,7 +205,7 @@ test("prompts render a relationships block above the snapshot only when the tick
   const templated = buildPrompt(withRelations, "", template);
   assert.ok(templated.includes("Relationships:\n- related to OW-1732: Other ticket"));
   assert.ok(templated.indexOf("Relationships:") < templated.indexOf(`"id": "issue-1"`), "relationships precede the JSON snapshot in template prompts");
-  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [] };
+  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), teamId: null, context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [] };
   const plain = buildPrompt(without, "");
   assert.ok(!plain.includes("Relationships:"), "no empty Relationships header");
   assert.ok(!buildPrompt("raw context string", "").includes("Relationships:"));
@@ -235,14 +237,32 @@ test("settings persist the template with private permissions and reset removes i
   const path = join(directory, "settings.json");
   try {
     const settings = new Settings(path);
-    assert.deepEqual(await settings.read(), { template: null });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false });
     const saved = await settings.save("Handle {{ticket}}\n{{context}}");
     assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await settings.read(), saved);
-    assert.deepEqual(await settings.save(""), { template: null });
+    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false });
     await assert.rejects(readFile(path), { code: "ENOENT" });
-    assert.deepEqual(await settings.read(), { template: null });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("the mark-in-progress setting round-trips without disturbing the saved template", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-linear-settings-mark-"));
+  const path = join(directory, "settings.json");
+  try {
+    const settings = new Settings(path);
+    await settings.patch({ markInProgress: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true });
+    await settings.save("Handle {{ticket}}\n{{context}}");
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true });
+    // Clearing the template keeps the flag; clearing the flag with no template removes the file.
+    await settings.patch({ template: "" });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true });
+    await settings.patch({ markInProgress: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false });
+    await assert.rejects(readFile(path), { code: "ENOENT" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -496,7 +516,7 @@ function mockPaseo(create: (options: PaseoWorkspaceAgentCreateOptions) => Promis
 
 test("launch fetches fresh context and starts exactly one agent for concurrent calls and response retries", async () => {
   let fetches = 0, creates = 0;
-  const launcher = new Launcher({ detail: async () => { fetches++; return detail; } });
+  const launcher = new Launcher({ ...noMark, detail: async () => { fetches++; return detail; } });
   const configured = { ...input, modeId: "code", thinkingOptionId: "high" };
   const paseo = mockPaseo(async (options) => {
     creates++;
@@ -518,7 +538,7 @@ test("launch fetches fresh context and starts exactly one agent for concurrent c
 
 test("a saved default prompt template shapes the agent's first prompt", async () => {
   let captured: string | undefined;
-  const launcher = new Launcher({ detail: async () => detail });
+  const launcher = new Launcher({ ...noMark, detail: async () => detail });
   const paseo = mockPaseo(async (options) => { captured = options.prompt; return { id: "agent-1" }; });
   const template = "Handle {{ticket}}.\nPlan first, then code.\n\n{{instructions}}\n\n{{context}}";
   const result = await launcher.start(input, paseo, { promptTemplate: template });
@@ -532,7 +552,7 @@ test("a saved default prompt template shapes the agent's first prompt", async ()
 
 test("pre-launch errors can retry, but uncertain agent creation is never automatically repeated", async () => {
   let fetches = 0, creates = 0;
-  const launcher = new Launcher({ detail: async () => {
+  const launcher = new Launcher({ ...noMark, detail: async () => {
     if (++fetches === 1) throw new Error("Linear unavailable");
     return detail;
   } });
@@ -545,7 +565,7 @@ test("pre-launch errors can retry, but uncertain agent creation is never automat
 });
 
 test("a missing project cannot create an agent", async () => {
-  const launcher = new Launcher({ detail: async () => { throw new Error("Should not fetch"); } });
+  const launcher = new Launcher({ ...noMark, detail: async () => { throw new Error("Should not fetch"); } });
   const paseo = mockPaseo(async () => { throw new Error("Should not create"); }, null);
   await assert.rejects(launcher.start(input, paseo), /project is no longer available/);
 });
@@ -579,7 +599,7 @@ test("safeBranchName accepts canonical Linear names and rejects unsafe git refs"
 
 test("Git launches create a new ticket worktree from the chosen project and base branch", async () => {
   let workspaces = 0;
-  const launcher = new Launcher({ detail: async () => detail }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => detail }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
   const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
     workspaces++;
     assert.deepEqual(options.source, { kind: "worktree", projectId: "project-1", cwd: "/repo", action: "branch-off", baseBranch: "refs/remotes/origin/main", branchName: "eng-42-5f6f1154" });
@@ -594,7 +614,7 @@ test("Git launches create a new ticket worktree from the chosen project and base
 
 test("Git launches use Linear's canonical branch name when present and safe", async () => {
   const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748-define-a-pr-template-in-ow-back" } };
-  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
   const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
     assert.deepEqual(options.source, { kind: "worktree", projectId: "project-1", cwd: "/repo", action: "branch-off", baseBranch: "refs/remotes/origin/main", branchName: "victor/ow-1748-define-a-pr-template-in-ow-back" });
   });
@@ -604,7 +624,7 @@ test("Git launches use Linear's canonical branch name when present and safe", as
 
 test("unsafe Linear branch names fall back to the synthesized slug", async () => {
   const withBranch = { ...detail, issue: { ...detail.issue, branchName: "bad name~1" } };
-  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
   const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
     assert.equal((options.source as { branchName?: string }).branchName, "eng-42-5f6f1154");
   });
@@ -615,7 +635,7 @@ test("unsafe Linear branch names fall back to the synthesized slug", async () =>
 test("a colliding Linear branch name is retried exactly once with the request suffix", async () => {
   const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748" } };
   const attempts: PaseoWorkspaceCreateOptions[] = [];
-  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
   const paseo = {
     projects: { list: async () => ({ projects: [{ projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }] }) },
     workspaces: { create: async (options: PaseoWorkspaceCreateOptions) => {
@@ -636,7 +656,7 @@ test("a colliding Linear branch name is retried exactly once with the request su
 test("non-collision workspace failures are never retried", async () => {
   const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748" } };
   let attempts = 0;
-  const launcher = new Launcher({ detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
   const paseo = {
     projects: { list: async () => ({ projects: [{ projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }] }) },
     workspaces: { create: async () => { attempts++; throw new Error("network connection lost"); } },
@@ -647,14 +667,14 @@ test("non-collision workspace failures are never retried", async () => {
 });
 
 test("removed or missing base branches fail before creating a workspace", async () => {
-  const launcher = new Launcher({ detail: async () => { throw new Error("Should not fetch"); } }, async () => ({ branches: [], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => { throw new Error("Should not fetch"); } }, async () => ({ branches: [], defaultBranch: null }));
   const paseo = mockPaseo(async () => { throw new Error("Should not create"); }, { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, () => { throw new Error("Should not create workspace"); });
   await assert.rejects(launcher.start({ ...input, baseBranch: "refs/heads/deleted" }, paseo), /available base branch/);
 });
 
 test("uncertain workspace creation is not repeated on request retry", async () => {
   let attempts = 0;
-  const launcher = new Launcher({ detail: async () => detail });
+  const launcher = new Launcher({ ...noMark, detail: async () => detail });
   const paseo = mockPaseo(async () => { throw new Error("Should not create agent"); }, undefined, () => {
     attempts++;
     throw new Error("Response lost after workspace creation");
@@ -662,4 +682,111 @@ test("uncertain workspace creation is not repeated on request retry", async () =
   await assert.rejects(launcher.start(input, paseo), /Workspace creation could not be confirmed/);
   await assert.rejects(launcher.start(input, paseo), /Workspace creation could not be confirmed/);
   assert.equal(attempts, 1);
+});
+
+test("started-state resolution prefers an explicit choice, then the in-progress name, then position", () => {
+  const states: TeamState[] = [
+    { id: "s1", name: "Todo", type: "unstarted", position: 1 },
+    { id: "s2", name: "In Review", type: "started", position: 2 },
+    { id: "s3", name: "In Progress", type: "started", position: 3 },
+    { id: "s4", name: "Done", type: "completed", position: 4 },
+  ];
+  assert.equal(resolveStartedState(states)?.name, "In Progress");
+  // An explicit choice wins over the name heuristic.
+  assert.equal(resolveStartedState(states, "s2")?.name, "In Review");
+  // Without an "in progress" name, the lowest-position started state wins.
+  assert.equal(resolveStartedState(states.filter((state) => state.id !== "s3"))?.name, "In Review");
+  // A team with no started states gets no target — never a write to "Todo" or "Done".
+  assert.equal(resolveStartedState(states.filter((state) => state.type === "unstarted")), null);
+});
+
+function makeStateService(path: string, states: unknown, mutationResponse: Record<string, unknown>, calls: unknown[][]): LinearService {
+  return new LinearService(new Credentials(path, "env-key"), (key, query, variables) => {
+    calls.push([query, variables]);
+    return Promise.resolve(query === UPDATE_ISSUE_STATE_QUERY ? mutationResponse : { team: { states: { nodes: states } } });
+  });
+}
+
+test("marking in progress is a no-op for tickets already in a started state", async () => {
+  const calls: unknown[][] = [];
+  const service = makeStateService(join(tmpdir(), `paseo-linear-mark-${process.pid}`), [], {}, calls);
+  const result = await service.markInProgress(normalizeIssue(rawIssue), "team-1");
+  assert.deepEqual(result, { changed: false });
+  assert.equal(calls.length, 0);
+});
+
+test("marking in progress sends exactly one mutation to the resolved state", async () => {
+  const calls: unknown[][] = [];
+  const service = makeStateService(
+    join(tmpdir(), `paseo-linear-mark2-${process.pid}`),
+    [{ id: "ip", name: "In Progress", type: "started", position: 2 }, { id: "ir", name: "In Review", type: "started", position: 1 }],
+    { issueUpdate: { success: true, issue: { id: "issue-1", state: { name: "In Progress" } } } },
+    calls,
+  );
+  const result = await service.markInProgress({ ...normalizeIssue(rawIssue), status: "Todo", statusType: "unstarted" }, "team-1");
+  assert.deepEqual(result, { changed: true });
+  const mutations = calls.filter(([query]) => query === UPDATE_ISSUE_STATE_QUERY);
+  assert.equal(mutations.length, 1);
+  assert.deepEqual(mutations[0][1], { id: "issue-1", stateId: "ip" });
+});
+
+test("mutation failures become notes: success=false, thrown errors, and teams without a started state", async () => {
+  const ticket = { ...normalizeIssue(rawIssue), status: "Todo", statusType: "unstarted" };
+  const rejected = makeStateService(join(tmpdir(), `paseo-linear-mark3-${process.pid}`), [{ id: "ip", name: "In Progress", type: "started", position: 2 }], { issueUpdate: { success: false } }, []);
+  const rejectedResult = await rejected.markInProgress(ticket, "team-1");
+  assert.equal(rejectedResult.changed, false);
+  assert.match(rejectedResult.note ?? "", /not applied/);
+
+  const throwing = makeStateService(join(tmpdir(), `paseo-linear-mark4-${process.pid}`), [{ id: "ip", name: "In Progress", type: "started", position: 2 }], {}, []);
+  (throwing as unknown as { post: Post }).post = (async (key: string, query: string, variables: Record<string, unknown>) => {
+    if (query === UPDATE_ISSUE_STATE_QUERY) throw new Error("mutation requires write access");
+    return { team: { states: { nodes: [{ id: "ip", name: "In Progress", type: "started", position: 2 }] } } };
+  }) as Post;
+  const thrownResult = await throwing.markInProgress(ticket, "team-1");
+  assert.equal(thrownResult.changed, false);
+  assert.match(thrownResult.note ?? "", /write access/);
+
+  const noStarted = makeStateService(join(tmpdir(), `paseo-linear-mark5-${process.pid}`), [{ id: "todo", name: "Todo", type: "unstarted", position: 1 }, { id: "done", name: "Done", type: "completed", position: 2 }], {}, []);
+  const noneResult = await noStarted.markInProgress(ticket, "team-1");
+  assert.equal(noneResult.changed, false);
+  assert.match(noneResult.note ?? "", /no "In Progress" state/);
+
+  const noTeam = makeStateService(join(tmpdir(), `paseo-linear-mark6-${process.pid}`), [], {}, []);
+  const teamless = await noTeam.markInProgress(ticket, null);
+  assert.equal(teamless.changed, false);
+  assert.match(teamless.note ?? "", /no team/);
+
+  const badTeam = makeStateService(join(tmpdir(), `paseo-linear-mark7-${process.pid}`), [], {}, []);
+  (badTeam as unknown as { post: Post }).post = (async () => { throw new Error("Entity not found: Team"); }) as Post;
+  const badResult = await badTeam.markInProgress(ticket, "team-1");
+  assert.equal(badResult.changed, false);
+  assert.match(badResult.note ?? "", /Could not load the ticket team's states/);
+});
+
+test("launch marks the ticket in progress only when opted in, and demotes failures to warnings", async () => {
+  const calls: unknown[][] = [];
+  const detailIssue = { ...rawIssue, state: { name: "Todo", type: "unstarted" } };
+  const linear = new LinearService(new Credentials(join(tmpdir(), `paseo-linear-launch-${process.pid}`), "env-key"), (key, query, variables) => {
+    calls.push([query, variables]);
+    if (query === ISSUE_DETAIL_QUERY) return Promise.resolve({ issue: detailIssue });
+    if (query === COMMENT_QUERY) return Promise.resolve({ issue: { comments: { nodes: [] } } });
+    if (query === TEAM_STATES_QUERY) return Promise.resolve({ team: { states: { nodes: [{ id: "ip", name: "In Progress", type: "started", position: 2 }] } } });
+    return Promise.resolve({ issueUpdate: { success: false } });
+  });
+  const launcher = new Launcher(linear);
+  const paseo = mockPaseo(async () => ({ id: "agent-1" }));
+
+  // Off (the default): the agent launches and no state mutation is attempted.
+  const off = await launcher.start({ ...input, markInProgress: false }, paseo);
+  assert.equal(off.warnings.length, 0);
+  assert.equal(calls.filter(([query]) => query === UPDATE_ISSUE_STATE_QUERY).length, 0);
+
+  // On: the mutation runs, and Linear's refusal becomes a warning, not a failure.
+  const on = await launcher.start({ ...input, markInProgress: true, requestId: "6f7f2265-5949-4548-a092-c4d0e4942599" }, paseo, { markInProgress: true });
+  assert.equal(on.agentId, "agent-1");
+  assert.equal(on.warnings.length, 1);
+  assert.match(on.warnings[0], /not applied/);
+  const mutations = calls.filter(([query]) => query === UPDATE_ISSUE_STATE_QUERY);
+  assert.equal(mutations.length, 1);
+  assert.deepEqual(mutations[0][1], { id: "issue-1", stateId: "ip" });
 });

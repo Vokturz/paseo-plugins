@@ -1,9 +1,9 @@
 # linear-tickets — implementation brief: Tier 1, Tier 2, and the launch state update
 
-Status: **in progress.** Tiers 1 and 2 landed; Tier 3 (opt-in `issueUpdate` on launch) in flight. Every endpoint, field and filter below was validated
+Status: **complete.** All tiers (1.1–1.3, 2.1–2.3, 3.1) landed; every endpoint, field and filter below was validated
 against the live Linear GraphQL schema *and* the real `Overwatch-ai` workspace (read-only)
 on 2026-02 — the evidence line under each item is real response data, not documentation
-recall. (51 → 59 tests as items land.)
+recall. (51 → 76 tests across the items.)
 
 Scope: Tier 1 (context accuracy), Tier 2 (list UX), and exactly one Tier 3 item
 (`issueUpdate` on launch). Other Tier 3 items (completion comments, `attachmentLinkGitHubPR`,
@@ -403,7 +403,7 @@ shows it in the list.
 
 # Tier 3 (single item) — mark the ticket In Progress on launch
 
-## 3.1 `issueUpdate` state transition
+## 3.1 `issueUpdate` state transition ✅ done
 
 **Why.** The natural companion to launching an agent: the ticket should stop looking like
 "Todo" the moment work starts, without the user switching to Linear.
@@ -521,6 +521,17 @@ failed transition degrades to a visible warning without affecting the agent.
    open a ticket with inverse-only relations → confirm the relationship line in the prompt →
    launch with the state option on → confirm the ticket moved to `In Progress` and the agent
    prompt contains the template + relationships.
+
+**Done 2026-07-09** (76/76 tests green). `markInProgress(issue, teamId)` is the plugin's only
+write: already-started tickets are untouched, target resolution is explicit-id → "In Progress"
+name → lowest-position started state (verified live: the team has *both* `In Review` and
+`In Progress` as started, and the name heuristic picks the right one), and every failure mode
+(no team, unreadable team states, `success: false`, thrown mutation, no started state) degrades
+to a launch warning. Opt-in via the launch-form toggle, persisted in `settings.json` next to
+the prompt template via `linear.get-settings` / `linear.set-settings`; `launchAgentRpc` carries
+`markInProgress` into the launcher's dedupe fingerprint. Live probes: real team states load
+read-only, and a nonexistent team id yields `Entity not found: Team` as a note — no writes to
+real tickets were performed.
 
 # Open decisions (resolved 2026-07-09)
 

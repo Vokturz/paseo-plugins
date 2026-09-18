@@ -1,5 +1,5 @@
-import type { TicketDetail } from "../shared/contracts";
-import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans } from "./context";
+import type { Issue, TicketDetail } from "../shared/contracts";
+import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans, label } from "./context";
 import { Credentials } from "./credentials";
 
 const endpoint = "https://api.linear.app/graphql";
@@ -151,6 +151,32 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
   }
 }`;
 
+// A team's workflow states, used to resolve where "in progress" points at.
+export type TeamState = { id: string; name: string; type: string; position: number };
+
+export const TEAM_STATES_QUERY = `query teamStates($teamId: String!) {
+  team(id: $teamId) { states(first: 50) { nodes { id name type position } } }
+}`;
+
+// The plugin's only write: move one ticket into a team's "started" state.
+export const UPDATE_ISSUE_STATE_QUERY = `mutation issueUpdateState($id: String!, $stateId: String!) {
+  issueUpdate(id: $id, input: { stateId: $stateId }) { success issue { id state { name type } } }
+}`;
+
+// Resolution order matters: a team can have several "started" states ("In Review" and
+// "In Progress" in this workspace). Prefer an explicit choice, then a state named
+// "in progress", then the lowest-position started state. Never pick any other type.
+export function resolveStartedState(states: TeamState[], preferredId?: string): TeamState | null {
+  if (preferredId) {
+    const chosen = states.find((state) => state.id === preferredId);
+    if (chosen) return chosen;
+  }
+  const started = states
+    .filter((state) => state.type.trim().toLowerCase() === "started")
+    .sort((a, b) => a.position - b.position);
+  return started.find((state) => state.name.trim().toLowerCase() === "in progress") ?? started[0] ?? null;
+}
+
 export const COMMENT_QUERY = `query issueComments($id: String!, $first: Int!, $after: String) {
   issue(id: $id) {
     comments(first: $first, after: $after) {
@@ -237,6 +263,7 @@ export class LinearService {
       }
       const issueData = record(data.issue);
       const issue = normalizeIssue(issueData);
+      const teamId = label(record(issueData.team ?? {}).id) || null;
       const warnings: string[] = [];
       let comments: unknown[] = [];
       try {
@@ -251,7 +278,59 @@ export class LinearService {
         comments = [];
         warnings.push("Comments could not be loaded; only the ticket details are included.");
       }
-      return { issue, warnings, context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
+      return { issue, teamId, warnings, context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
     });
+  }
+
+  // The team's workflow states, cached for the plugin's lifetime; they rarely change.
+  private readonly teamStatesCache = new Map<string, TeamState[]>();
+
+  private async teamStates(teamId: string): Promise<TeamState[]> {
+    const cached = this.teamStatesCache.get(teamId);
+    if (cached) return cached;
+    const data = record(await this.withKey((key) => this.post(key, TEAM_STATES_QUERY, { teamId })));
+    const team = data.team && typeof data.team === "object" ? record(data.team) : {};
+    const statesPage = team.states && typeof team.states === "object" ? record(team.states) : { nodes: [] };
+    const states = connection(statesPage).nodes
+      .map((node) => record(node))
+      .map((node) => ({
+        id: label(node.id),
+        name: label(node.name),
+        type: label(node.type),
+        position: typeof node.position === "number" && Number.isFinite(node.position) ? node.position : Number.MAX_SAFE_INTEGER,
+      }))
+      .filter((state) => state.id && state.name);
+    this.teamStatesCache.set(teamId, states);
+    return states;
+  }
+
+  // The plugin's only write. Best-effort by design: callers surface `note` as a warning,
+  // and a failure here must never turn into a launch failure.
+  async markInProgress(issue: Issue, teamId: string | null): Promise<{ changed: boolean; note?: string }> {
+    // Already in the team's "started" state (e.g. "In Progress"): leave it. A repeat
+    // write would only add audit noise to a ticket the agent is about to work on.
+    if (issue.statusType.trim().toLowerCase() === "started") return { changed: false };
+    if (!teamId) return { changed: false, note: "The ticket has no team, so it could not be marked in progress." };
+    let states: TeamState[];
+    try {
+      states = await this.teamStates(teamId);
+    } catch (error) {
+      return { changed: false, note: `Could not load the ticket team's states: ${error instanceof Error ? error.message : "unknown error"}` };
+    }
+    const target = resolveStartedState(states);
+    if (!target) {
+      return { changed: false, note: `The ticket's team has no \"In Progress\" state, so it was left in ${issue.status || "its current state"}.` };
+    }
+    let data: Record<string, unknown>;
+    try {
+      data = record(await this.withKey((key) => this.post(key, UPDATE_ISSUE_STATE_QUERY, { id: issue.id, stateId: target.id })));
+    } catch (error) {
+      return { changed: false, note: `Linear rejected the change to ${target.name}: ${error instanceof Error ? error.message : "unknown error"}` };
+    }
+    const result = data.issueUpdate && typeof data.issueUpdate === "object" ? record(data.issueUpdate) : {};
+    if (result.success === false) {
+      return { changed: false, note: `Linear reported that the change to ${target.name} was not applied; the ticket is unchanged.` };
+    }
+    return { changed: true };
   }
 }

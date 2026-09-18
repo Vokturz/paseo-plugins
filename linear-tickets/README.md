@@ -26,7 +26,8 @@ paseo plugin reload linear-tickets
 ## Connect and start work
 
 1. Create a personal Linear API key in Settings → Security & access. Read permission
-   and access to the relevant teams are sufficient.
+   and access to the relevant teams are sufficient; write permission is only needed
+   for the optional "mark the ticket In Progress" step (see below).
 2. Paste it into **Connect Linear**. Alternatively, set `LINEAR_API_KEY` in the
    Paseo daemon's environment before starting the daemon.
 3. Select an assigned ticket. Preview the ticket context and choose a Paseo project.
@@ -107,6 +108,16 @@ Templates are limited to 8,000 characters, stored per host with the other plugin
 and apply to new agents only. **Reset to built-in** restores the default. The per-launch
 instructions field and the 200,000-character context limit apply as before.
 
+## Marking tickets In Progress
+
+By default the plugin never changes Linear. When you switch on **Mark the ticket In
+Progress when the agent starts** in the launch form, a launch also moves the ticket
+into its team's started state — the state named *In Progress* when the team has one,
+otherwise the first started state in the team's workflow. Tickets already in a started
+state are left as they are, and a team without a started state never produces a write.
+The choice is saved per host and needs Linear's write permission. If the change cannot
+be made, the agent still starts and the failure appears as a warning with the result.
+
 ## Connection storage
 
 The API-key form stores the key on the daemon host in
@@ -120,8 +131,10 @@ default-prompt templates live next to the key in `settings.json` with the same
 permission pattern.
 
 The plugin talks directly to Linear's official [GraphQL API](https://linear.app/developers/graphql)
-at `https://api.linear.app/graphql` with read-only queries. Only the server contacts
-Linear. The key is never added to ticket context, agent configuration, or agent labels.
+at `https://api.linear.app/graphql`. Its queries are read-only; the only write is the
+optional In Progress transition made when a launch is explicitly opted in. Only the
+server contacts Linear. The key is never added to ticket context, agent configuration,
+or agent labels.
 
 Repeated launch requests reuse their result for the lifetime of the loaded plugin.
 If agent creation returns an uncertain failure, the same request is not retried
@@ -132,6 +145,7 @@ start again. This retry cache does not survive a plugin or daemon restart.
 
 `npm run typecheck` checks both entrypoints against Paseo's SDK. `npm test` covers
 GraphQL response parsing, pagination, context preservation, prompt template rendering
-and validation, credential and settings persistence, ticket retrieval, and agent
-creation/retries with mocked Linear and Paseo calls.
+and validation, credential and settings persistence, ticket retrieval, state-transition
+resolution and failure handling, and agent creation/retries with mocked Linear and Paseo
+calls.
 Live account authentication and agent execution require your configured host and key.

@@ -6,7 +6,7 @@ export function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function label(value: unknown): string {
+export function label(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
   if (value && typeof value === "object" && "name" in value && typeof value.name === "string") return value.name;

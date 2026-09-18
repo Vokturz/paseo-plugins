@@ -32,7 +32,7 @@ export const issueSchema = z.object({
 });
 export type Issue = z.infer<typeof issueSchema>;
 
-export const detailSchema = z.object({ issue: issueSchema, context: z.string(), warnings: z.array(z.string()) });
+export const detailSchema = z.object({ issue: issueSchema, teamId: z.string().nullable().default(null), context: z.string(), warnings: z.array(z.string()) });
 export type TicketDetail = z.infer<typeof detailSchema>;
 const connectionSchema = z.object({ connected: z.boolean(), source: z.enum(["environment", "saved", "none"]) });
 export const statusRpc = defineRpc({ name: "linear.status", input: z.object({}), output: connectionSchema });
@@ -87,6 +87,7 @@ export const launchAgentRpc = defineRpc({
     modeId: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
     instructions: z.string().max(10_000).default(""),
+    markInProgress: z.boolean().default(false),
     requestId: z.string().uuid(),
   }),
   output: z.object({ agentId: z.string(), warnings: z.array(z.string()) }),
@@ -111,4 +112,17 @@ export const setDefaultPromptRpc = defineRpc({
   name: "linear.set-default-prompt",
   input: z.object({ template: z.string().max(8000) }),
   output: promptTemplateSchema,
+});
+
+// One settings contract for the whole plugin; the default-prompt RPCs above keep working
+// for compatibility.
+export const getSettingsRpc = defineRpc({
+  name: "linear.get-settings",
+  input: z.object({}),
+  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean() }),
+});
+export const setSettingsRpc = defineRpc({
+  name: "linear.set-settings",
+  input: z.object({ template: z.string().max(8000).optional(), markInProgress: z.boolean().optional() }),
+  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean() }),
 });

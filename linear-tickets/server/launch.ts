@@ -7,7 +7,7 @@ import { findProject, readBranches } from "./projects";
 
 type Start = RpcInput<typeof launchAgentRpc>;
 type Result = { agentId: string; warnings: string[] };
-type Options = { promptTemplate?: string };
+type Options = { promptTemplate?: string; markInProgress?: boolean };
 
 // Linear computes the branch name with the workspace's branch-format setting, so it is
 // the name users expect — but a stored value is not guaranteed to be a safe git ref.
@@ -32,10 +32,10 @@ export class Launcher {
   private readonly requests = new Map<string, { fingerprint: string; result: Promise<Result> }>();
   private readonly active = new Map<string, Promise<Result>>();
 
-  constructor(private readonly linear: Pick<LinearService, "detail">, private readonly branches = readBranches) {}
+  constructor(private readonly linear: Pick<LinearService, "detail" | "markInProgress">, private readonly branches = readBranches) {}
 
   start(input: Start, paseo: PaseoApi, options: Options = {}): Promise<Result> {
-    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? ""]);
+    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? "", options.markInProgress ?? false]);
     const prior = this.requests.get(input.requestId);
     if (prior) {
       if (prior.fingerprint !== fingerprint) return Promise.reject(new Error("This launch request has already been used. Reopen the ticket to start another agent."));
@@ -111,6 +111,18 @@ export class Launcher {
     }).catch(() => {
       throw new Error("Agent creation could not be confirmed. Check the workspace's agents before reopening this ticket to try again.");
     });
-    return { agentId: agent.id, warnings: detail.warnings };
+    const warnings = [...detail.warnings];
+    if (options.markInProgress) {
+      // Best-effort: the agent already exists, so a failed transition degrades to a
+      // warning instead of failing the launch. The requestId/fingerprint dedupe above
+      // also means a retried identical launch does not re-run the mutation.
+      try {
+        const outcome = await this.linear.markInProgress(detail.issue, detail.teamId);
+        if (!outcome.changed && outcome.note) warnings.push(outcome.note);
+      } catch (error) {
+        warnings.push(`Could not mark the ticket in progress: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+    }
+    return { agentId: agent.id, warnings };
   }
 }

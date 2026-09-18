@@ -3,7 +3,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
+import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
 import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusChangesText, statusCounts, type DateDirection, type DateField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
@@ -30,6 +30,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const getIssues = useRpc(listIssuesRpc), getIssuesCount = useRpc(countIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
   const searchAll = useRpc(searchIssuesRpc);
   const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
+  const getSettings = useRpc(getSettingsRpc), saveSettings = useRpc(setSettingsRpc);
+  const [markInProgress, setMarkInProgress] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templateText, setTemplateText] = useState("");
   const [templateSaved, setTemplateSaved] = useState<string | null>(null);
@@ -163,6 +165,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   }, [getTemplate]);
 
   useEffect(() => {
+    void getSettings({}).then((value) => { setMarkInProgress(value.markInProgress); }, () => {});
+  }, [getSettings]);
+
+  useEffect(() => {
     let cancelled = false;
     setDetail(null); setDetailError(null); setShowContext(false); setContextCopied(false);
     if (!selected) { setDetailLoading(false); return; }
@@ -255,9 +261,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   };
   const launch = () => void run("Starting agent", async () => {
     if (!selected || !canLaunch) return;
-    const fingerprint = JSON.stringify([selected.id, projectId, baseBranch, provider, modeId, thinkingOptionId, instructions]);
+    const fingerprint = JSON.stringify([selected.id, projectId, baseBranch, provider, modeId, thinkingOptionId, instructions, markInProgress]);
     if (launchRequest.current?.fingerprint !== fingerprint) launchRequest.current = { fingerprint, id: requestId() };
-    const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, requestId: launchRequest.current.id });
+    const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, markInProgress, requestId: launchRequest.current.id });
     setAgent(result);
   });
   const copyContext = () => {
@@ -344,7 +350,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         {[
           "Create a personal API key in Linear → Settings → Security & access.",
           "Paste it below, or set LINEAR_API_KEY in the daemon environment.",
-          "A read-only key is enough — the plugin never writes to Linear.",
+          "A read-only key covers browsing; write permission is only needed for the optional \"mark the ticket In Progress\" step.",
         ].map((step, index) => <View key={step} style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
           <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
             <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>{index + 1}</Text>
@@ -485,6 +491,16 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <FieldLabel title="A little extra direction" icon="MessageSquare" hint="optional" t={t} />
             <TextInput accessibilityLabel="Additional instructions for the agent" editable={!busy} multiline maxLength={10000} value={instructions} onChangeText={setInstructions}
               placeholder="Anything the agent should know before it starts…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.input, minHeight: 84, textAlignVertical: "top" }} />
+
+            <Divider t={t} spaced />
+            <FieldLabel title="Ticket status" icon="ListTodo" hint="when the agent starts" t={t} />
+            <Button title={markInProgress ? "Mark the ticket In Progress when the agent starts" : "Keep the ticket in its current state"} icon={markInProgress ? "Check" : "CircleDashed"} stretch chosen={markInProgress}
+              onPress={() => void run("Saving setting", async () => {
+                const next = !markInProgress;
+                setMarkInProgress(next);
+                setMarkInProgress((await saveSettings({ markInProgress: next })).markInProgress);
+              })} />
+            <Text style={t.muted}>Optional — the plugin stays read-only while this is off. The ticket only moves when its team has an In Progress state and it is not already in one.</Text>
 
             <Divider t={t} spaced />
             <FieldLabel title="Default prompt" icon="PenLine" hint="used when you start an agent" t={t} />
