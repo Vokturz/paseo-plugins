@@ -1,0 +1,84 @@
+# Linear tickets
+
+A Paseo sidebar plugin that connects to Linear MCP, shows tickets assigned to you,
+and starts an agent with the ticket details and comments in its first prompt.
+
+## Install
+
+Requires Paseo 0.8.0 or newer and Node.js 22 or newer on the daemon host.
+
+```sh
+cd linear-tickets
+npm ci
+npm run typecheck
+npm test
+paseo plugin install /absolute/path/to/linear-tickets
+```
+
+Enable plugins in Paseo Settings → Plugins if needed. Open **Linear tickets** in
+the sidebar or **Open Linear tickets** in the command center. After source changes:
+
+```sh
+paseo plugin reload linear-tickets
+```
+
+## Connect and start work
+
+1. Create a personal Linear API key in Settings → Security & access. Read permission
+   and access to the relevant teams are sufficient.
+2. Paste it into **Connect Linear**. Alternatively, set `LINEAR_API_KEY` in the
+   Paseo daemon's environment before starting the daemon.
+3. Select an assigned ticket. Preview the ticket context and choose a Paseo project.
+   For Git projects, select a base branch from the local or remote branches known
+   to the checkout. Choose a provider, then search its models. When supported, choose the
+   provider's change mode and the model's reasoning level, then optionally add instructions.
+4. Select **Start agent with ticket**, then **Open agent**.
+
+Tickets load in pages of 50. Use the status chips to filter by your Linear workflow
+statuses, and search by title, ID, project, team or label. Sort by **Updated** or
+**Created**, then toggle **Newest first / Oldest first**. Missing dates sort last.
+Counts, filters and sorting apply to loaded tickets; choose **Load all tickets** to
+include all assignments. Archived tickets are excluded.
+For Git projects, the plugin creates a new ticket branch and a dedicated worktree
+from the selected base branch. Your existing checkout is not switched. Remote
+branches use their locally fetched state; fetch in the project first if you need
+the newest remote commits. Projects without Git use their project directory.
+
+The launch fetches fresh details, relationships and comments through Linear MCP.
+The JSON response is preserved in the prompt, including the description and any
+returned links. Linked documents and attachments are not downloaded. If comments
+are unavailable, the preview and agent prompt say so. Context over 200,000 characters
+is rejected rather than silently truncated.
+
+The ticket preview renders HTTPS images linked with standard Markdown image syntax,
+interactive HTTPS Markdown links, inline code, and fenced code blocks.
+Images are loaded by the Paseo client only for display and are not downloaded into the
+agent's workspace or added to its prompt. Provider badges, available modes, and reasoning
+levels are read from the configured Paseo provider catalog; unavailable capabilities stay
+out of the form.
+
+## Connection storage
+
+The API-key form stores the key on the daemon host in
+`$PASEO_HOME/linear-tickets/credentials.json` (default:
+`~/.paseo/linear-tickets/credentials.json`). The directory is owner-only and the
+file uses mode `0600`; it is a plaintext credential, not an OS keychain entry.
+`LINEAR_API_KEY` takes precedence over a saved key. Disconnect removes the saved
+key; environment keys must be removed from the daemon environment followed by a
+restart. All clients connected to this host share the same Linear account.
+
+The plugin uses Linear's official [read-only MCP endpoint](https://linear.app/docs/mcp)
+at `https://mcp.linear.app/mcp/readonly`. Only the server contacts Linear. The key
+is never added to ticket context, agent configuration, or agent labels.
+
+Repeated launch requests reuse their result for the lifetime of the loaded plugin.
+If agent creation returns an uncertain failure, the same request is not retried
+automatically: check the project's workspaces and agent list before reopening the ticket to
+start again. This retry cache does not survive a plugin or daemon restart.
+
+## Validation
+
+`npm run typecheck` checks both entrypoints against Paseo's SDK. `npm test` covers
+MCP response parsing, pagination, context preservation, credential persistence,
+ticket retrieval, and agent creation/retries with mocked Linear and Paseo calls.
+Live account authentication and agent execution require your configured host and key.
