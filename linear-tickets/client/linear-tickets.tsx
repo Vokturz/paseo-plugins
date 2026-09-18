@@ -4,7 +4,7 @@ import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
-import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
+import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusChangesText, statusCounts, type DateDirection, type DateField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
 import { Icon, copyText } from "@getpaseo/plugin/client/react-native";
@@ -274,17 +274,21 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     const chips = issue.labels.slice(0, layout.compact ? 1 : 2);
     const extra = issue.labels.length - chips.length;
     const places = [issue.project, issue.team].filter(Boolean).join(" · ");
-    if (!places && !chips.length && !extra) return null;
+    const due = issue.dueDate ? `Due ${formatIssueDate(issue.dueDate)}` : "";
+    const estimate = issue.estimate ? `${issue.estimate} pts` : "";
+    if (!places && !chips.length && !extra && !due && !estimate) return null;
     return <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
       {!!places && <Text numberOfLines={1} style={t.muted}>{places}</Text>}
       {chips.map((label) => <LabelChip key={label} label={label} t={t} />)}
       {extra > 0 && <Text style={t.muted}>+{extra}</Text>}
+      {due && <Text style={{ ...t.muted, color: colors.accent, fontSize: 11 }}>{due}</Text>}
+      {estimate && <Text style={{ ...t.muted, fontSize: 11 }}>{estimate}</Text>}
     </View>;
   };
 
   const renderIssueRow = (issue: Issue, index: number) => {
     const isHovered = hovered === issue.id;
-    return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${formatRelativeDate(issue[dateField])}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
+    return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${formatRelativeDate(issue[dateField] ?? "")}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
       onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
       style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
@@ -300,13 +304,13 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         </View>
         {!layout.compact && <>
           <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /></View>
-          <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField])}</Text>
+          <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField] ?? "")}</Text>
           <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
         </>}
         {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
       </View>
       {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
+        <StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField] ?? "")}</Text>
       </View>}
     </Pressable>;
   };
@@ -396,7 +400,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               <MetaItem icon="Tag" label="Labels" chips={current.labels} t={t} />
               <MetaItem icon="Calendar" label="Created" value={formatIssueDate(current.createdAt)} t={t} />
               <MetaItem icon="Clock" label="Updated" value={formatRelativeDate(current.updatedAt)} t={t} />
+              {current.dueDate && <MetaItem icon="CalendarClock" label="Due" value={formatIssueDate(current.dueDate)} t={t} />}
+              {current.estimate ? <MetaItem icon="Hash" label="Estimate" value={`${current.estimate} pts`} t={t} /> : null}
             </View>
+
+            {detail && statusChangesText(detail.context) && <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Icon name="History" size={13} color={colors.foregroundMuted} />
+              <Text style={{ ...t.muted, fontSize: 12 }}>Status history: {statusChangesText(detail.context)}</Text>
+            </View>}
 
             <Divider t={t} spaced />
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -523,16 +534,16 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
             <FieldLabel title="Sort" icon="ArrowDownUp" t={t} />
             <Segmented t={t} label="Sort field" value={dateField} onChange={(value) => setDateField(value)}
-              options={[{ value: "updatedAt" as DateField, label: "Updated", icon: "Clock" }, { value: "createdAt" as DateField, label: "Created", icon: "Calendar" }]} />
+              options={[{ value: "updatedAt" as DateField, label: "Updated", icon: "Clock" }, { value: "createdAt" as DateField, label: "Created", icon: "Calendar" }, { value: "dueDate" as DateField, label: "Due", icon: "CalendarClock" }]} />
             <Segmented t={t} label="Sort direction" value={dateDirection} onChange={(value) => setDateDirection(value)}
-              options={[{ value: "newest" as DateDirection, label: "Newest", icon: "ArrowDown" }, { value: "oldest" as DateDirection, label: "Oldest", icon: "ArrowUp" }]} />
+              options={[{ value: "newest" as DateDirection, label: dateField === "dueDate" ? "Latest" : "Newest", icon: "ArrowDown" }, { value: "oldest" as DateDirection, label: dateField === "dueDate" ? "Soonest" : "Oldest", icon: "ArrowUp" }]} />
             {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} />}
           </View>
         </View>
 
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
           <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
-          <Text style={t.muted}>Sorted by {dateField === "updatedAt" ? "last updated" : "date created"} · {dateDirection === "newest" ? "newest first" : "oldest first"}</Text>
+          <Text style={t.muted}>Sorted by {dateField === "dueDate" ? (dateDirection === "newest" ? "due date · latest first" : "due date · soonest first") : dateField === "updatedAt" ? (dateDirection === "newest" ? "last updated · newest first" : "last updated · oldest first") : dateDirection === "newest" ? "date created · newest first" : "date created · oldest first"}</Text>
         </View>
 
         {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
@@ -545,7 +556,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <Text style={{ ...t.eyebrow, width: 82 }}>Issue</Text>
             <Text style={{ ...t.eyebrow, flex: 1 }}>Title</Text>
             <Text style={{ ...t.eyebrow, width: 130 }}>Status</Text>
-            <Text style={{ ...t.eyebrow, width: 88, textAlign: "right" }}>{dateField === "updatedAt" ? "Updated" : "Created"}</Text>
+            <Text style={{ ...t.eyebrow, width: 88, textAlign: "right" }}>{dateField === "dueDate" ? "Due date" : dateField === "updatedAt" ? "Updated" : "Created"}</Text>
             <View style={{ width: 14 }} />
           </View>}
           {ticketsLoading && !visible.length && [0, 1, 2, 3].map((row) => <View key={row} style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 18, borderTopWidth: row ? 1 : 0, borderTopColor: colors.surface2 }}>

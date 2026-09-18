@@ -1,6 +1,6 @@
 import type { Issue } from "../shared/contracts";
 
-export type DateField = "updatedAt" | "createdAt";
+export type DateField = "updatedAt" | "createdAt" | "dueDate";
 export type DateDirection = "newest" | "oldest";
 export const issueStatus = (issue: Issue) => issue.status.trim() || "No status";
 
@@ -9,7 +9,7 @@ export function filterIssues(issues: Issue[], query: string, status: string | nu
   return issues.filter((issue) => (!status || issueStatus(issue) === status)
     && [issue.identifier, issue.title, issue.project, issue.team, issue.status, ...issue.labels].join(" ").toLowerCase().includes(search))
     .sort((a, b) => {
-      const left = Date.parse(a[field]), right = Date.parse(b[field]);
+      const left = Date.parse(a[field] ?? ""), right = Date.parse(b[field] ?? "");
       // Missing dates stay last in either direction; equal dates keep a stable order.
       if (!Number.isFinite(left)) return Number.isFinite(right) ? 1 : 0;
       if (!Number.isFinite(right)) return -1;
@@ -21,6 +21,19 @@ export function statusCounts(issues: Issue[]) {
   const counts = new Map<string, number>();
   for (const issue of issues) counts.set(issueStatus(issue), (counts.get(issueStatus(issue)) ?? 0) + 1);
   return [...counts].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** "Todo → In Progress → Done" from the context snapshot's stateHistory (null when absent). */
+export function statusChangesText(context: string): string | null {
+  try {
+    const parsed = JSON.parse(context);
+    const history = parsed && typeof parsed === "object" ? (parsed as { stateHistory?: unknown }).stateHistory : undefined;
+    if (!Array.isArray(history)) return null;
+    const names = history
+      .map((span) => (span && typeof span === "object" ? (span as { state?: unknown }).state : null))
+      .filter((name): name is string => typeof name === "string" && Boolean(name));
+    return names.length >= 2 ? names.join(" → ") : null;
+  } catch { return null; }
 }
 
 export function formatIssueDate(value: string) {

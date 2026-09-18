@@ -43,13 +43,14 @@ aggregation, so they come from a bounded server pass (25 pages × 50; counts sho
 server-side by that exact state name. The search box filters the loaded tickets
 instantly and, from two characters up, also runs Linear's workspace-wide search:
 its matches appear in a separate **Across Linear** section, and tickets already on
-the list are not repeated there. Sort by **Updated** or **Created**, then **Newest /
-Oldest**; missing dates sort last. Sorting applies to the loaded tickets; choose
-**Load all tickets** to include every assignment. Archived tickets are excluded.
+the list are not repeated there. Sort by **Updated**, **Created** or **Due date**,
+then **Newest / Oldest** (for due dates: latest / soonest); missing dates sort
+last. Sorting applies to the loaded tickets; choose **Load all tickets** to include
+every assignment. Archived tickets are excluded.
 
 Rows show the ticket's priority, a status colour and icon for its workflow state,
-label chips and a relative timestamp ("3h ago"), with the absolute date in the
-accessibility label. Status colours follow Linear's workflow category (`started`,
+label chips, a due date and estimate when your team sets them, and a relative
+timestamp ("3h ago"), with the absolute date in the accessibility label. Status colours follow Linear's workflow category (`started`,
 `completed`, `canceled`, `backlog`, `unstarted`, `duplicate`, …), so custom state
 names such as "In Review" get the right tone in any workspace; keyword matching on
 the state name remains as a fallback for categories that are not recognised. While tickets load,
@@ -69,13 +70,15 @@ The launch fetches fresh details, relationships and comments through Linear's Gr
 Relationships arrive in both directions — links the ticket makes and links pointing at it
 (blocks, blocked by, related, duplicates, duplicated by) — and appear as a compact
 **Relationships** list above the JSON snapshot, so the agent sees blockers before starting
-work. The JSON response is preserved in the prompt, including the description and any
+work. Status changes arrive the same way: a compact **Status changes** line (for example
+"Todo → In Progress → Done (currently Done)") and the raw state-history spans in the JSON
+snapshot. The JSON response is preserved in the prompt, including the description and any
 returned links. Linked documents and attachments are not downloaded. If comments
 are unavailable, the preview and agent prompt say so. Context over 200,000 characters
 is rejected rather than silently truncated.
 
-The ticket preview shows the ticket's project, team, labels, priority and dates, then
-renders the description as Markdown: headings, bullet and numbered lists, task
+The ticket preview shows the ticket's project, team, labels, priority, dates (including
+due date and estimate when set) and a status-history line, then renders the description as Markdown: headings, bullet and numbered lists, task
 checkboxes, pipe tables, quotes, dividers, bold text, inline code and fenced code
 blocks. Tables scroll horizontally when they are too wide and keep their column
 alignment. Code blocks carry a copy button, and **Copy context** copies the exact

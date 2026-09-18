@@ -6,7 +6,7 @@ import { test, type TestContext } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
 import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOptions } from "@getpaseo/client";
-import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships } from "./context";
+import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships, stateHistorySpans } from "./context";
 import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
@@ -401,6 +401,47 @@ test("details fetch relations and paginated comments using the resolved issue ID
   assert.equal(JSON.parse(result.context).comments.length, 1);
   assert.equal(JSON.parse(result.context).comments[0].body, "Regression on mobile");
   assert.deepEqual(result.warnings, []);
+});
+
+test("detail queries state history and folds it into the context snapshot and prompt", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    if (query === ISSUE_DETAIL_QUERY) return { issue: { ...rawIssue, dueDate: "2026-10-01", estimate: 3, stateHistory: { nodes: [
+      { state: { name: "Todo", type: "unstarted" }, startedAt: "2026-09-18T20:56:19Z", endedAt: "2026-09-18T21:02:05Z" },
+      { state: { name: "In Progress", type: "started" }, startedAt: "2026-09-18T21:02:05Z", endedAt: null },
+      { state: null },
+    ] } } };
+    return { issue: { comments: { nodes: [comment], pageInfo: { hasNextPage: false, endCursor: null } } } };
+  };
+  const result = await mockLinear(post).detail("ENG-42");
+  const parsed = JSON.parse(result.context);
+  assert.equal(result.issue.dueDate, "2026-10-01");
+  assert.equal(result.issue.estimate, 3);
+  assert.deepEqual(parsed.stateHistory.map((span: { state: string }) => span.state), ["Todo", "In Progress"]);
+  assert.equal(parsed.stateHistory[1].endedAt, null);
+  assert.match(buildPrompt(result, ""), /Status changes: Todo → In Progress \(currently In Progress\)/);
+  assert.doesNotMatch(buildPrompt(JSON.stringify({ issue: rawIssue, comments: [] }), ""), /Status changes/);
+});
+
+test("due dates and estimates normalize to explicit nulls when absent", () => {
+  assert.equal(normalizeIssue({ ...rawIssue, dueDate: "2026-10-01", estimate: 5 }).dueDate, "2026-10-01");
+  assert.equal(normalizeIssue({ ...rawIssue, dueDate: "2026-10-01", estimate: 5 }).estimate, 5);
+  assert.equal(normalizeIssue(rawIssue).dueDate, null);
+  assert.equal(normalizeIssue(rawIssue).estimate, null);
+});
+
+test("state history spans drop malformed entries and only appear in context when present", () => {
+  assert.deepEqual(stateHistorySpans({ stateHistory: { nodes: [
+    { state: { name: "Todo" }, startedAt: "s", endedAt: "e" },
+    { state: { name: "" } },
+    null,
+    42,
+    { state: { name: "Done" }, startedAt: "x", endedAt: null },
+  ] } }), [{ state: "Todo", startedAt: "s", endedAt: "e" }, { state: "Done", startedAt: "x", endedAt: null }]);
+  assert.deepEqual(stateHistorySpans(rawIssue), []);
+  assert.doesNotMatch(buildContext(rawIssue, [], []), /stateHistory/);
+  assert.match(buildContext(rawIssue, [], [{ state: "Todo", startedAt: "s", endedAt: null }]), /\"stateHistory\"/);
 });
 
 test("comment failures produce an explicit warning while the ticket details remain", async () => {

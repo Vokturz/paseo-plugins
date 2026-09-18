@@ -1,5 +1,5 @@
 import type { TicketDetail } from "../shared/contracts";
-import { buildContext, normalizeIssue, issuePage, connection, record } from "./context";
+import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans } from "./context";
 import { Credentials } from "./credentials";
 
 const endpoint = "https://api.linear.app/graphql";
@@ -68,6 +68,8 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String,
       url
       state { name type }
       priorityLabel
+      dueDate
+      estimate
       project { name identifier url }
       team { name key }
       labels(first: 50) { nodes { id name } }
@@ -97,6 +99,8 @@ export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: I
       url
       state { name type }
       priorityLabel
+      dueDate
+      estimate
       project { name identifier url }
       team { name key }
       labels(first: 50) { nodes { id name } }
@@ -130,6 +134,8 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     state { name type }
     branchName
     priorityLabel
+    dueDate
+    estimate
     project { id name identifier url }
     team { id name key }
     labels(first: 50) { nodes { id name } }
@@ -141,6 +147,7 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     inverseRelations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
     attachments(first: 50) { nodes { id title url } }
     documents(first: 50) { nodes { id title url } }
+    stateHistory(first: 20) { nodes { state { name type } startedAt endedAt } }
   }
 }`;
 
@@ -244,7 +251,7 @@ export class LinearService {
         comments = [];
         warnings.push("Comments could not be loaded; only the ticket details are included.");
       }
-      return { issue, warnings, context: buildContext(issueData, comments) };
+      return { issue, warnings, context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
     });
   }
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeIssue } from "../server/context";
-import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, priorityTone, statusCounts, statusTone } from "./issue-list";
+import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, priorityTone, statusChangesText, statusCounts, statusTone } from "./issue-list";
 
 const tickets = [
   normalizeIssue({ id: "a", title: "Fix login", status: "In Progress", labels: ["mobile"], updatedAt: "2026-09-18T10:00:00Z", createdAt: "2026-01-01T00:00:00Z" }),
@@ -70,6 +70,27 @@ test("priority accepts labels and Linear's numeric values", () => {
   assert.equal(priorityTone(""), "none");
   assert.equal(hasPriority("Low"), true);
   assert.equal(hasPriority("No priority"), false);
+});
+
+test("due dates sort with missing dates last, in either direction", () => {
+  const withDue = [
+    normalizeIssue({ id: "d1", title: "Late", dueDate: "2026-10-20", updatedAt: "2026-09-18T00:00:00Z" }),
+    normalizeIssue({ id: "d2", title: "Early", dueDate: "2026-10-01", updatedAt: "2026-09-19T00:00:00Z" }),
+    normalizeIssue({ id: "d3", title: "No due date", updatedAt: "2026-09-17T00:00:00Z" }),
+  ];
+  assert.deepEqual(filterIssues(withDue, "", null, "dueDate", "newest").map((item) => item.id), ["d1", "d2", "d3"]);
+  assert.deepEqual(filterIssues(withDue, "", null, "dueDate", "oldest").map((item) => item.id), ["d2", "d1", "d3"]);
+});
+
+test("status history text summarizes state spans from a context snapshot", () => {
+  const context = JSON.stringify({ issue: {}, comments: [], stateHistory: [
+    { state: "Todo", startedAt: "2026-09-01T00:00:00Z", endedAt: "2026-09-02T00:00:00Z" },
+    { state: "In Progress", startedAt: "2026-09-02T00:00:00Z", endedAt: null },
+  ]});
+  assert.equal(statusChangesText(context), "Todo → In Progress");
+  assert.equal(statusChangesText(JSON.stringify({ issue: {}, comments: [], stateHistory: [{ state: "Done" }] })), null);
+  assert.equal(statusChangesText(JSON.stringify({ issue: {}, comments: [] })), null);
+  assert.equal(statusChangesText("not json"), null);
 });
 
 test("relative dates stay short and fall back to a calendar date", () => {

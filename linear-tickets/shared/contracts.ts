@@ -21,6 +21,8 @@ export const issueSchema = z.object({
   statusType: z.string().default(""),
   branchName: z.string().default(""),
   priority: z.string(),
+  dueDate: z.string().nullable().default(null),
+  estimate: z.number().nullable().default(null),
   project: z.string(),
   description: z.string(),
   team: z.string(),
