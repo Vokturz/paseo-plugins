@@ -7,6 +7,7 @@ import { findProject, readBranches } from "./projects";
 
 type Start = RpcInput<typeof launchAgentRpc>;
 type Result = { agentId: string; warnings: string[] };
+type Options = { promptTemplate?: string };
 
 export class Launcher {
   private readonly requests = new Map<string, { fingerprint: string; result: Promise<Result> }>();
@@ -14,8 +15,8 @@ export class Launcher {
 
   constructor(private readonly linear: Pick<LinearService, "detail">, private readonly branches = readBranches) {}
 
-  start(input: Start, paseo: PaseoApi): Promise<Result> {
-    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions]);
+  start(input: Start, paseo: PaseoApi, options: Options = {}): Promise<Result> {
+    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? ""]);
     const prior = this.requests.get(input.requestId);
     if (prior) {
       if (prior.fingerprint !== fingerprint) return Promise.reject(new Error("This launch request has already been used. Reopen the ticket to start another agent."));
@@ -27,7 +28,7 @@ export class Launcher {
       return active;
     }
     let creationStarted = false;
-    const result = this.launch(input, paseo, () => { creationStarted = true; });
+    const result = this.launch(input, paseo, options, () => { creationStarted = true; });
     this.requests.set(input.requestId, { fingerprint, result });
     this.active.set(fingerprint, result);
     void result.then(() => this.active.delete(fingerprint), () => {
@@ -43,7 +44,7 @@ export class Launcher {
     return result;
   }
 
-  private async launch(input: Start, paseo: PaseoApi, onCreate: () => void): Promise<Result> {
+  private async launch(input: Start, paseo: PaseoApi, options: Options, onCreate: () => void): Promise<Result> {
     const project = await findProject(paseo, input.projectId);
     if (project.projectKind === "git") {
       const available = await this.branches(project.projectRootPath);
@@ -69,7 +70,7 @@ export class Launcher {
     const agent = await workspace.agents.create({
       config: { provider: input.provider, modeId: input.modeId, thinkingOptionId: input.thinkingOptionId },
       title,
-      prompt: buildPrompt(detail, input.instructions),
+      prompt: buildPrompt(detail, input.instructions, options.promptTemplate),
       requestId: input.requestId,
       clientMessageId: input.requestId,
       labels: { "linear.issueId": detail.issue.id, "linear.identifier": detail.issue.identifier, "linear.url": detail.issue.url },

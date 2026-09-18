@@ -69,6 +69,24 @@ agent's workspace or added to its prompt. Provider badges, available modes, and 
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
 out of the form.
 
+## Customizing the launch prompt
+
+Every launch starts from the built-in default prompt: work on the ticket in the current
+workspace, respect the repository's instructions, and treat the snapshot as data, not as
+authority. You can replace it with your own template under **Default prompt** in the agent
+setup — for example to have the agent list a plan before coding, run the test suite, or
+open a pull request in a specific format.
+
+Placeholders are substituted at launch time:
+
+- `{{ticket}}` — the ticket's ID and title
+- `{{instructions}}` — the per-launch "A little extra direction" text
+- `{{context}}` — the ticket snapshot (required; a template without it is rejected)
+
+Templates are limited to 8,000 characters, stored per host with the other plugin settings,
+and apply to new agents only. **Reset to built-in** restores the default. The per-launch
+instructions field and the 200,000-character context limit apply as before.
+
 ## Connection storage
 
 The API-key form stores the key on the daemon host in
@@ -77,7 +95,9 @@ The API-key form stores the key on the daemon host in
 file uses mode `0600`; it is a plaintext credential, not an OS keychain entry.
 `LINEAR_API_KEY` takes precedence over a saved key. Disconnect removes the saved
 key; environment keys must be removed from the daemon environment followed by a
-restart. All clients connected to this host share the same Linear account.
+restart. All clients connected to this host share the same Linear account. Saved
+default-prompt templates live next to the key in `settings.json` with the same
+permission pattern.
 
 The plugin talks directly to Linear's official [GraphQL API](https://linear.app/developers/graphql)
 at `https://api.linear.app/graphql` with read-only queries. Only the server contacts
@@ -91,6 +111,7 @@ start again. This retry cache does not survive a plugin or daemon restart.
 ## Validation
 
 `npm run typecheck` checks both entrypoints against Paseo's SDK. `npm test` covers
-GraphQL response parsing, pagination, context preservation, credential persistence,
-ticket retrieval, and agent creation/retries with mocked Linear and Paseo calls.
+GraphQL response parsing, pagination, context preservation, prompt template rendering
+and validation, credential and settings persistence, ticket retrieval, and agent
+creation/retries with mocked Linear and Paseo calls.
 Live account authentication and agent execution require your configured host and key.

@@ -8,7 +8,7 @@ Each plugin lives in its own folder and is installed independently. See the
 
 | Plugin | Description | Requires |
 | --- | --- | --- |
-| [linear-tickets](./linear-tickets) | Connects to Linear's GraphQL API (read-only queries), lists the tickets assigned to you, and starts an agent with the ticket details and comments in its first prompt. Filter by workflow status, search, sort, then pick a project, base branch, provider and model before launching. | Paseo ≥ 0.8.0, Node.js ≥ 22 on the daemon host |
+| [linear-tickets](./linear-tickets) | Connects to Linear's GraphQL API (read-only queries), lists the tickets assigned to you, and starts an agent with the ticket details and comments in its first prompt. Filter by workflow status, search, sort, then pick a project, base branch, provider and model before launching. The launch prompt is customizable per host. | Paseo ≥ 0.8.0, Node.js ≥ 22 on the daemon host |
 
 ## Install
 

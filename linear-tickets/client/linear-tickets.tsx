@@ -3,7 +3,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, connectRpc, issueContextRpc, disconnectRpc, listIssuesRpc, launchAgentRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
+import { branchesRpc, connectRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
 import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
@@ -28,6 +28,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const getBranches = useRpc(branchesRpc);
   const getStatus = useRpc(statusRpc), connect = useRpc(connectRpc), disconnect = useRpc(disconnectRpc);
   const getIssues = useRpc(listIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
+  const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [templateText, setTemplateText] = useState("");
+  const [templateSaved, setTemplateSaved] = useState<string | null>(null);
+  const [builtinTemplate, setBuiltinTemplate] = useState("");
   const [connection, setConnection] = useState<{ connected: boolean; source: "none" | "saved" | "environment" } | null>(null);
   const [key, setKey] = useState("");
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -132,6 +137,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     });
     void loadOptions();
   }, [getStatus, loadIssues, loadOptions]);
+
+  useEffect(() => {
+    void getTemplate({}).then((result) => {
+      setBuiltinTemplate(result.builtin);
+      setTemplateSaved(result.template);
+      setTemplateText(result.template ?? result.builtin);
+    }, () => { setTemplateOpen(false); });
+  }, [getTemplate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -382,6 +395,27 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <FieldLabel title="A little extra direction" icon="MessageSquare" hint="optional" t={t} />
             <TextInput accessibilityLabel="Additional instructions for the agent" editable={!busy} multiline maxLength={10000} value={instructions} onChangeText={setInstructions}
               placeholder="Anything the agent should know before it starts…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.input, minHeight: 84, textAlignVertical: "top" }} />
+
+            <Divider t={t} spaced />
+            <FieldLabel title="Default prompt" icon="PenLine" hint="used when you start an agent" t={t} />
+            {templateOpen ? <View style={{ gap: 8 }}>
+              <TextInput accessibilityLabel="Default prompt template" editable={!busy} multiline maxLength={8000} value={templateText} onChangeText={setTemplateText}
+                placeholder="How the agent should work on this ticket…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.mono, minHeight: 120, textAlignVertical: "top" }} />
+              <Text style={t.muted}>Placeholders: {"{{ticket}}"} = ticket ID and title · {"{{instructions}}"} = the extra direction above · {"{{context}}"} = the ticket snapshot (required).</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                <Button title="Save default prompt" icon="Check" onPress={() => void run("Saving default prompt", async () => {
+                  const result = await saveTemplate({ template: templateText });
+                  setTemplateSaved(result.template); setTemplateText(result.template ?? result.builtin); setTemplateOpen(false);
+                })} />
+                <Button title="Reset to built-in" icon="RotateCcw" onPress={() => void run("Resetting default prompt", async () => {
+                  const result = await saveTemplate({ template: "" });
+                  setTemplateSaved(null); setTemplateText(result.builtin); setTemplateOpen(false);
+                })} />
+              </View>
+            </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+              <Button title="Edit default prompt" icon="PenLine" size="sm" disabled={Boolean(busy)} onPress={() => { setTemplateText(templateSaved ?? builtinTemplate); setTemplateOpen(true); }} />
+              <Text style={t.muted}>{templateSaved ? "A custom template is used for new agents." : "The built-in default is used for new agents."}</Text>
+            </View>}
 
             <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 16, marginTop: 4, gap: 12 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>

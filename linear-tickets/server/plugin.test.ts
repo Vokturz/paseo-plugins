@@ -9,6 +9,7 @@ import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOp
 import { buildContext, buildPrompt, issuePage, normalizeIssue, connection } from "./context";
 import { Credentials } from "./credentials";
 import { Launcher } from "./launch";
+import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
 import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, type Post } from "./linear";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
@@ -37,7 +38,7 @@ const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", in
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.issue-context", "linear.project-branches", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -135,6 +136,43 @@ test("prompt preserves description, relationships, comments, user instructions a
   assert.ok(prompt.includes("Some context unavailable"));
   assert.ok(prompt.includes("external task data"));
   assert.throws(() => buildContext({ description: "x".repeat(200_001) }, []), /too large/);
+});
+
+test("a custom default prompt template renders ticket, instructions and context in place", () => {
+  const template = "Handle {{ticket}}.\n\nPlan first, then implement and run the tests.\n\n{{instructions}}\n\n\nSnapshot:\n{{context}}";
+  const prompt = buildPrompt({ ...detail, warnings: ["Comments unavailable"] }, input.instructions, template);
+  assert.ok(prompt.startsWith("Handle ENG-42: Fix the sign-in flow."));
+  assert.ok(prompt.includes("Add a regression check."));
+  assert.ok(prompt.includes("Regression on mobile"));
+  assert.ok(prompt.endsWith("Context limitations:\nComments unavailable"));
+  assert.ok(!prompt.includes("{{"), "no placeholders may survive rendering");
+  assert.ok(!prompt.includes("\n\n\n"), "blank runs collapse to a single blank line");
+  const noInstructions = buildPrompt(detail, "", "Check {{ticket}}\n{{instructions}}\n{{context}}");
+  assert.ok(!noInstructions.includes("{{") && !noInstructions.includes("\n\n\n"));
+});
+
+test("template validation rejects missing context placeholders and oversized text", () => {
+  assert.equal(normalizeTemplate(""), null);
+  assert.equal(normalizeTemplate("  "), null);
+  assert.equal(normalizeTemplate("  do {{context}}  "), "do {{context}}");
+  assert.throws(() => normalizeTemplate("no placeholder at all"), /must include \{\{context\}\}/);
+  assert.throws(() => normalizeTemplate(`x${"y".repeat(MAX_TEMPLATE_LENGTH)}`), /limited to/);
+});
+
+test("settings persist the template with private permissions and reset removes it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-linear-settings-"));
+  const path = join(directory, "settings.json");
+  try {
+    const settings = new Settings(path);
+    assert.deepEqual(await settings.read(), { template: null });
+    const saved = await settings.save("Handle {{ticket}}\n{{context}}");
+    assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.deepEqual(await settings.read(), saved);
+    assert.deepEqual(await settings.save(""), { template: null });
+    await assert.rejects(readFile(path), { code: "ENOENT" });
+    assert.deepEqual(await settings.read(), { template: null });
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("saved credentials stay on disk with private permissions and environment credentials take precedence", async () => {
@@ -280,6 +318,20 @@ test("launch fetches fresh context and starts exactly one agent for concurrent c
   assert.equal(fetches, 1);
   assert.equal(creates, 1);
   await assert.rejects(launcher.start({ ...configured, id: "ENG-99" }, paseo), /already been used/);
+});
+
+test("a saved default prompt template shapes the agent's first prompt", async () => {
+  let captured: string | undefined;
+  const launcher = new Launcher({ detail: async () => detail });
+  const paseo = mockPaseo(async (options) => { captured = options.prompt; return { id: "agent-1" }; });
+  const template = "Handle {{ticket}}.\nPlan first, then code.\n\n{{instructions}}\n\n{{context}}";
+  const result = await launcher.start(input, paseo, { promptTemplate: template });
+  assert.equal(result.agentId, "agent-1");
+  assert.ok(captured?.startsWith("Handle ENG-42: Fix the sign-in flow."));
+  assert.ok(captured?.includes("Add a regression check."));
+  assert.ok(captured?.includes("Regression on mobile"));
+  // Changing the template is a new launch, not a retry of the same request.
+  await assert.rejects(launcher.start({ ...input, instructions: "" }, paseo, { promptTemplate: "other {{context}}" }), /already been used/);
 });
 
 test("pre-launch errors can retry, but uncertain agent creation is never automatically repeated", async () => {
