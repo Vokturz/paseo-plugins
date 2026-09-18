@@ -17,7 +17,7 @@ import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISS
 const rawIssue = {
   id: "issue-1", identifier: "ENG-42", title: "Fix the sign-in flow",
   description: "Keep the existing session alive.", url: "https://linear.app/example/issue/ENG-42",
-  state: { name: "In Progress" }, priorityLabel: "P1",
+  state: { name: "In Progress", type: "started" }, priorityLabel: "P1",
   project: { id: "project-1", name: "App", identifier: "APP", url: "https://linear.app/example/project/app" },
   team: { id: "team-1", name: "Engineering", key: "ENG" },
   labels: { nodes: [{ id: "label-1", name: "bug" }] },
@@ -99,16 +99,19 @@ test("network failures surface as connection errors", async (t) => {
   await assert.rejects(postGraphQL("key", "q", {}), /Could not reach/);
 });
 
-test("issue normalization reads workflow state, priority labels and label connections", () => {
+test("issue normalization reads workflow state, its category, priority labels and label connections", () => {
   const issue = normalizeIssue(rawIssue);
   assert.equal(issue.identifier, "ENG-42");
   assert.equal(issue.status, "In Progress");
+  assert.equal(issue.statusType, "started");
   assert.equal(issue.priority, "P1");
   assert.equal(issue.project, "App");
   assert.equal(issue.team, "Engineering");
   assert.deepEqual(issue.labels, ["bug"]);
   assert.equal(issue.description, rawIssue.description);
   assert.equal(issue.updatedAt, rawIssue.updatedAt);
+  assert.equal(normalizeIssue({ id: "x", title: "No category", state: { name: "Weird" } }).statusType, "");
+  assert.equal(normalizeIssue({ id: "x", title: "No state at all" }).statusType, "");
   assert.throws(() => normalizeIssue({ title: "Missing ID" }), /without an ID/);
 });
 

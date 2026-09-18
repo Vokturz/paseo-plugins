@@ -41,6 +41,23 @@ test("workflow statuses map to visual tones without hard-coding a single workflo
   assert.equal(statusTone(""), "neutral");
 });
 
+test("workflow categories tone states before name keywords, with a safe fallback", () => {
+  assert.equal(statusTone("In Progress", "started"), "active");
+  assert.equal(statusTone("In Review", "started"), "active");
+  assert.equal(statusTone("Mystery", "started"), "active");
+  assert.equal(statusTone("Done", "completed"), "done");
+  assert.equal(statusTone("Shipped it", "completed"), "done");
+  assert.equal(statusTone("Won't do", "canceled"), "canceled");
+  assert.equal(statusTone("Duplicate", "duplicate"), "canceled");
+  assert.equal(statusTone("Todo", "unstarted"), "backlog");
+  assert.equal(statusTone("Backlog", "backlog"), "backlog");
+  assert.equal(statusTone("Needs triage", "triage"), "backlog");
+  // Category matching is case- and whitespace-insensitive; unknown categories fall back to the name.
+  assert.equal(statusTone("In Review", "  STARTED "), "active");
+  assert.equal(statusTone("Waiting for review", "weird"), "review");
+  assert.equal(statusTone("Blocked on vendor", "weird"), "neutral");
+});
+
 test("priority accepts labels and Linear's numeric values", () => {
   assert.equal(formatPriority("1"), "Urgent");
   assert.equal(formatPriority("0"), "No priority");

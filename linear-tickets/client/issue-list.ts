@@ -33,7 +33,21 @@ export function formatIssueDate(value: string) {
 // Linear workflows are user-defined, so tone matching stays generic: keywords, not exact names.
 export type StatusTone = "done" | "canceled" | "active" | "review" | "backlog" | "neutral";
 
-export function statusTone(status: string): StatusTone {
+// WorkflowState.type is an open string set (observed: backlog, unstarted, triage, started,
+// completed, duplicate, canceled), so this is a known-value fast path, not a closed enum.
+const STATUS_TYPE_TONES: Record<string, StatusTone> = {
+  backlog: "backlog",
+  unstarted: "backlog",
+  triage: "backlog",
+  started: "active",
+  completed: "done",
+  canceled: "canceled",
+  duplicate: "canceled",
+};
+
+export function statusTone(status: string, statusType = ""): StatusTone {
+  const tone = STATUS_TYPE_TONES[statusType.trim().toLowerCase()];
+  if (tone) return tone;
   const name = status.trim().toLowerCase();
   if (!name || name === "no status") return "neutral";
   if (/(^|\W)(done|complete|completed|closed|merged|deployed|released|shipped|resolved)(\W|$)/.test(name)) return "done";

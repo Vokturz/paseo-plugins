@@ -18,6 +18,7 @@ export const issueSchema = z.object({
   title: z.string(),
   url: z.string(),
   status: z.string(),
+  statusType: z.string().default(""),
   priority: z.string(),
   project: z.string(),
   description: z.string(),

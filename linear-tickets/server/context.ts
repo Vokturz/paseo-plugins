@@ -21,12 +21,14 @@ export function normalizeIssue(value: unknown): Issue {
   const labelsValue = issue.labels;
   const labels = Array.isArray(labelsValue) ? labelsValue
     : labelsValue && typeof labelsValue === "object" && Array.isArray((labelsValue as { nodes?: unknown }).nodes) ? (labelsValue as { nodes: unknown[] }).nodes : [];
+  const state = issue.state && typeof issue.state === "object" && !Array.isArray(issue.state) ? issue.state as Record<string, unknown> : undefined;
   return {
     id: issue.id,
     identifier: label(issue.identifier) || issue.id,
     title: issue.title,
     url: label(issue.url),
     status: label(issue.status ?? issue.state),
+    statusType: state ? label(state.type) : "",
     priority: label(issue.priorityLabel ?? issue.priority),
     project: label(issue.project),
     description: label(issue.description),

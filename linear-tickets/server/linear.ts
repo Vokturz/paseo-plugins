@@ -66,7 +66,7 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String)
       title
       description
       url
-      state { name }
+      state { name type }
       priorityLabel
       project { name identifier url }
       team { name key }
@@ -85,7 +85,7 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     title
     description
     url
-    state { name }
+    state { name type }
     priorityLabel
     project { id name identifier url }
     team { id name key }

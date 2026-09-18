@@ -191,6 +191,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
   const visible = filterIssues(issues, query, status, dateField, dateDirection);
   const statuses = statusCounts(issues);
+  // A chip is grouped by state name; use the first loaded ticket's workflow category for its accent.
+  const statusTypeFor = (name: string) => issues.find((issue) => issueStatus(issue) === name)?.statusType ?? "";
   // Keep a selected filter visible even when a refresh removes its last ticket.
   if (status && !statuses.some(([name]) => name === status)) statuses.push([status, 0]);
   const ticketsLoading = busy === "Loading connection" || busy === "Refreshing tickets" || busy === "Loading tickets" || busy === "Loading all tickets";
@@ -307,7 +309,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
                 </View>
                 <PriorityMark priority={current.priority} t={t} showLabel />
               </View>
-              <StatusBadge status={current.status} t={t} />
+              <StatusBadge status={current.status} statusType={current.statusType} t={t} />
             </View>
             <Text style={t.cardTitle}>{current.title}</Text>
 
@@ -436,7 +438,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <FieldLabel title="Status" icon="ListFilter" t={t} />
             <Button size="sm" title={`All · ${issues.length}`} chosen={status === null} onPress={() => setStatus(null)} />
-            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, t) }} />}
+            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, statusTypeFor(name), t) }} />}
               onPress={() => setStatus(status === name ? null : name)} />)}
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
@@ -491,14 +493,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
                   {metaLine(issue)}
                 </View>
                 {!layout.compact && <>
-                  <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} t={t} /></View>
+                  <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /></View>
                   <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField])}</Text>
                   <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
                 </>}
                 {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
               </View>
               {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <StatusBadge status={issueStatus(issue)} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
+                <StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
               </View>}
             </Pressable>;
           })}

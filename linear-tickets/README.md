@@ -42,8 +42,10 @@ include all assignments. Archived tickets are excluded.
 
 Rows show the ticket's priority, a status colour and icon for its workflow state,
 label chips and a relative timestamp ("3h ago"), with the absolute date in the
-accessibility label. Status colours are matched by keyword, so custom Linear
-workflows get a sensible tone instead of falling back to grey. While tickets load,
+accessibility label. Status colours follow Linear's workflow category (`started`,
+`completed`, `canceled`, `backlog`, `unstarted`, `duplicate`, …), so custom state
+names such as "In Review" get the right tone in any workspace; keyword matching on
+the state name remains as a fallback for categories that are not recognised. While tickets load,
 placeholder rows stand in for the table so the layout does not jump.
 
 For Git projects, the plugin creates a new ticket branch and a dedicated worktree
