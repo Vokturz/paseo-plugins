@@ -34,11 +34,15 @@ paseo plugin reload linear-tickets
    provider's change mode and the model's reasoning level, then optionally add instructions.
 4. Select **Start agent with ticket**, then **Open agent**.
 
-Tickets load in pages of 50. Use the status chips to filter by your Linear workflow
-statuses, and search by title, ID, project, team or label. Sort by **Updated** or
-**Created**, then toggle **Newest / Oldest**. Missing dates sort last.
-Counts, filters and sorting apply to loaded tickets; choose **Load all tickets** to
-include all assignments. Archived tickets are excluded.
+Tickets load in pages of 50, scoped to **Active** work by default (completed and
+canceled states are hidden server-side) with a one-tap **All** switch. The status
+chips show counts across *all* of your assignments — Linear's GraphQL exposes no
+aggregation, so they come from a bounded server pass (25 pages × 50; counts show a
+“+” when your assignments exceed that) and selecting a chip filters the list
+server-side by that exact state name. Search by title, ID, project, team or label,
+then sort by **Updated** or **Created**, **Newest / Oldest**; missing dates sort
+last. Search and sorting apply to the loaded tickets; choose **Load all tickets**
+to include every assignment. Archived tickets are excluded.
 
 Rows show the ticket's priority, a status colour and icon for its workflow state,
 label chips and a relative timestamp ("3h ago"), with the absolute date in the

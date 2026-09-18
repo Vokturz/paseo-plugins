@@ -39,8 +39,28 @@ export const disconnectRpc = defineRpc({ name: "linear.disconnect", input: z.obj
 
 export const listIssuesRpc = defineRpc({
   name: "linear.list-issues",
-  input: z.object({ cursor: z.string().optional() }),
+  // stateNames is a server-side selection (status chips); activeOnly is the default scope.
+  // An explicit name selection takes precedence over activeOnly in the built filter.
+  input: z.object({
+    cursor: z.string().optional(),
+    stateNames: z.array(z.string()).max(12).optional(),
+    activeOnly: z.boolean().optional(),
+  }),
   output: z.object({ issues: z.array(issueSchema), nextCursor: z.string().nullable() }),
+});
+
+// No aggregation exists in Linear's GraphQL: this is a bounded server pass (25 pages x 50)
+// over every assignment. `complete` is false when the cap was reached, in which case the
+// client presents the numbers as a lower bound rather than exact counts.
+export const countIssuesRpc = defineRpc({
+  name: "linear.count-issues",
+  input: z.object({}),
+  output: z.object({
+    total: z.number().int().nonnegative(),
+    byName: z.record(z.string(), z.number().int().nonnegative()),
+    byType: z.record(z.string(), z.number().int().nonnegative()),
+    complete: z.boolean(),
+  }),
 });
 
 export const issueContextRpc = defineRpc({

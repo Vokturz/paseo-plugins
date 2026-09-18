@@ -10,7 +10,8 @@ import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relat
 import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
-import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, type Post } from "./linear";
+import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, listIssueFilter, type Post } from "./linear";
+import { countIssuesRpc, listIssuesRpc } from "../shared/contracts";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
 // and the relationship fields the detail query requests.
@@ -38,7 +39,7 @@ const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", in
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -288,8 +289,71 @@ test("ticket listing requests the authenticated user's assignments and forwards 
     assert.equal(call.key, "test-key");
     assert.equal(call.query, LIST_ISSUES_QUERY);
   }
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2", filter: { assignee: { isMe: { eq: true } } } });
+});
+
+test("the list filter is deterministic; an explicit status selection beats active-only", () => {
+  assert.deepEqual(listIssueFilter(), { assignee: { isMe: { eq: true } } });
+  assert.deepEqual(listIssueFilter(undefined, true), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled"] } } });
+  assert.deepEqual(listIssueFilter([], true), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled"] } } });
+  assert.deepEqual(listIssueFilter(["Done", "  In Progress", "Done", "  "]), { assignee: { isMe: { eq: true } }, state: { name: { in: ["Done", "In Progress"] } } });
+  assert.deepEqual(listIssueFilter(["Done"], true), listIssueFilter(["Done"]));
+});
+
+test("ticket listing forwards the built filter to Linear", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (_key, _query, variables) => {
+    calls.push({ key: "test-key", query: LIST_ISSUES_QUERY, variables });
+    return { issues: { nodes: [rawIssue], pageInfo: { hasNextPage: false, endCursor: null } } };
+  };
+  const service = mockLinear(post);
+  await service.issues(undefined, undefined, true);
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled"] } } } });
+  await service.issues(undefined, ["In Progress"]);
+  assert.deepEqual(calls[1].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { name: { in: ["In Progress"] } } } });
+});
+
+test("issue counts aggregate across pages, skip malformed nodes, and report completeness", async () => {
+  const calls: PostCall[] = [];
+  const pages = [
+    { issues: { nodes: [
+      { state: { name: "In Progress", type: "started" } },
+      { state: { name: "Done", type: "completed" } },
+      { state: null },
+      null,
+    ], pageInfo: { hasNextPage: true, endCursor: "c2" } } },
+    { issues: { nodes: [{ state: { name: "In Progress", type: "started" } }], pageInfo: { hasNextPage: false, endCursor: "c3" } } },
+  ];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return pages[calls.length - 1];
+  };
+  const counts = await mockLinear(post).countIssues();
+  assert.deepEqual(counts, { total: 4, byName: { "In Progress": 2, Done: 1, "No status": 1 }, byType: { started: 2, completed: 1, unknown: 1 }, complete: true });
   assert.deepEqual(calls[0].variables, { first: 50, after: null });
-  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2" });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "c2" });
+});
+
+test("issue counts stop at the page cap and flag the sweep as incomplete", async () => {
+  let calls = 0;
+  const post: Post = async () => {
+    calls++;
+    return { issues: { nodes: [{ state: { name: "Todo", type: "unstarted" } }], pageInfo: { hasNextPage: true, endCursor: `c${calls}` } } };
+  };
+  const counts = await mockLinear(post).countIssues();
+  assert.equal(calls, 25);
+  assert.equal(counts.total, 25);
+  assert.equal(counts.complete, false);
+});
+
+test("list and count RPC contracts validate their inputs and outputs", () => {
+  assert.equal(listIssuesRpc.input.safeParse({ stateNames: ["Done"], activeOnly: true }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ stateNames: Array.from({ length: 13 }, (_, i) => `s${i}`) }).success, false);
+  assert.equal(listIssuesRpc.input.safeParse({ cursor: "x", stateNames: ["a", "b"], activeOnly: false }).success, true);
+  assert.equal(countIssuesRpc.input.safeParse({}).success, true);
+  assert.equal(countIssuesRpc.output.safeParse({ total: 3, byName: { a: 3 }, byType: { backlog: 3 }, complete: true }).success, true);
+  assert.equal(countIssuesRpc.output.safeParse({ total: -1, byName: {}, byType: {}, complete: true }).success, false);
 });
 
 test("details fetch relations and paginated comments using the resolved issue ID", async () => {

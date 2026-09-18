@@ -3,7 +3,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, connectRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
+import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
 import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
@@ -27,7 +27,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const paseo = usePaseo();
   const getBranches = useRpc(branchesRpc);
   const getStatus = useRpc(statusRpc), connect = useRpc(connectRpc), disconnect = useRpc(disconnectRpc);
-  const getIssues = useRpc(listIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
+  const getIssues = useRpc(listIssuesRpc), getIssuesCount = useRpc(countIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
   const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templateText, setTemplateText] = useState("");
@@ -37,8 +37,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [key, setKey] = useState("");
   const [issues, setIssues] = useState<Issue[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  const [counts, setCounts] = useState<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean } | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [scope, setScope] = useState<"active" | "all">("active");
   const [dateField, setDateField] = useState<DateField>("updatedAt");
   const [dateDirection, setDateDirection] = useState<DateDirection>("newest");
   const [manageConnection, setManageConnection] = useState(false);
@@ -79,13 +81,22 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     finally { busyRef.current = false; setBusy(null); }
   };
 
-  const loadIssues = useCallback(async (next?: string) => {
-    const page = await getIssues(next ? { cursor: next } : {});
+  const loadIssues = useCallback(async (next?: string, filter?: { scope: "active" | "all"; status: string | null }) => {
+    const f = filter ?? { scope, status };
+    const page = await getIssues({
+      ...(next ? { cursor: next } : {}),
+      ...(f.status ? { stateNames: [f.status] } : {}),
+      activeOnly: f.scope === "active",
+    });
     if (next && page.nextCursor === next) throw new Error("Linear repeated a page. Refresh the ticket list to continue.");
     setIssues((previous) => [...new Map((next ? [...previous, ...page.issues] : page.issues).map((issue) => [issue.id, issue])).values()]);
     setCursor(page.nextCursor);
     return page.nextCursor;
-  }, [getIssues]);
+  }, [getIssues, scope, status]);
+
+  const refreshCounts = useCallback(async () => {
+    try { setCounts(await getIssuesCount({})); } catch { /* counts are non-critical; the list still loads without them */ }
+  }, [getIssuesCount]);
 
   const loadAllIssues = async () => {
     let next = cursor;
@@ -133,7 +144,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   useEffect(() => {
     void run("Loading connection", async () => {
       const status = await getStatus({}); setConnection(status);
-      if (status.connected) await loadIssues();
+      if (status.connected) { await loadIssues(); void refreshCounts(); }
     });
     void loadOptions();
   }, [getStatus, loadIssues, loadOptions]);
@@ -190,11 +201,15 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const colors = t.colors;
 
   const visible = filterIssues(issues, query, status, dateField, dateDirection);
-  const statuses = statusCounts(issues);
+  // Chips: server-side counts across all assignments once the count pass lands; until then
+  // (or if it failed) fall back to the distinct names in the loaded pages.
+  const statuses: [string, number][] = counts
+    ? [...Object.entries(counts.byName)].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8)
+    : statusCounts(issues);
   // A chip is grouped by state name; use the first loaded ticket's workflow category for its accent.
   const statusTypeFor = (name: string) => issues.find((issue) => issueStatus(issue) === name)?.statusType ?? "";
-  // Keep a selected filter visible even when a refresh removes its last ticket.
-  if (status && !statuses.some(([name]) => name === status)) statuses.push([status, 0]);
+  // Keep a selected filter visible even when its last ticket leaves the loaded pages.
+  if (status && !statuses.some(([name]) => name === status)) statuses.push([status, counts?.byName[status] ?? 0]);
   const ticketsLoading = busy === "Loading connection" || busy === "Refreshing tickets" || busy === "Loading tickets" || busy === "Loading all tickets";
   const current = detail?.issue ?? selected;
   const missingRequirement = !project ? "Choose a project"
@@ -202,6 +217,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       : !provider ? "Choose a model"
         : optionsLoading || branchesLoading ? "Loading choices…"
           : !detail ? "Loading ticket details…" : "";
+  const changeStatus = (name: string | null) => {
+    setStatus(name); setIssues([]); setCursor(null);
+    void run("Loading tickets", async () => { await loadIssues(undefined, { scope, status: name }); });
+  };
+  const changeScope = (next: "active" | "all") => {
+    setScope(next); setIssues([]); setCursor(null);
+    void run("Loading tickets", async () => { await loadIssues(undefined, { scope: next, status }); });
+  };
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
   };
@@ -250,7 +273,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         {connectionPill}
         {connection?.connected && <>
           <Button title="Connection" icon="Plug" iconOnly size="md" chosen={manageConnection} onPress={() => setManageConnection(!manageConnection)} />
-          <Button title="Refresh tickets" icon="RefreshCw" iconOnly onPress={() => void run("Refreshing tickets", async () => { await loadIssues(); })} />
+          <Button title="Refresh tickets" icon="RefreshCw" iconOnly onPress={() => void run("Refreshing tickets", async () => { await loadIssues(); void refreshCounts(); })} />
         </>}
       </View>
     </View>
@@ -276,11 +299,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       <TextInput accessibilityLabel="Linear API key" secureTextEntry autoCapitalize="none" autoCorrect={false} value={key} onChangeText={setKey} placeholder="lin_api_…" placeholderTextColor={colors.foregroundMuted} style={t.input} />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Button title="Connect Linear" icon="Plug" primary disabled={!key.trim()} onPress={() => void run("Connecting Linear", async () => {
-          setConnection(await connect({ apiKey: key.trim() })); setKey(""); await loadIssues();
+          setConnection(await connect({ apiKey: key.trim() })); setKey(""); await loadIssues(); void refreshCounts();
         })} />
         <Button title="Retry saved connection" icon="RefreshCw" onPress={() => void run("Loading connection", async () => {
           const status = await getStatus({}); setConnection(status);
-          if (status.connected) await loadIssues();
+          if (status.connected) { await loadIssues(); void refreshCounts(); }
         })} />
       </View>
     </View> : <>
@@ -290,7 +313,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <Text style={t.muted}>{connection.source === "environment" ? "Key supplied by the daemon environment (LINEAR_API_KEY)." : "Key saved on this Paseo host."}</Text>
         </View>
         {connection.source !== "environment" && <Button title="Disconnect" icon="Unplug" tone="danger" onPress={() => void run("Disconnecting", async () => {
-          setConnection(await disconnect({})); setIssues([]); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
+          setConnection(await disconnect({})); setIssues([]); setCounts(null); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
         })} />}
       </View>}
 
@@ -437,9 +460,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <FieldLabel title="Status" icon="ListFilter" t={t} />
-            <Button size="sm" title={`All · ${issues.length}`} chosen={status === null} onPress={() => setStatus(null)} />
+            <Segmented t={t} label="Scope" value={scope} onChange={(value) => changeScope(value as "active" | "all")}
+              options={[{ value: "active" as const, label: "Active", icon: "Zap" }, { value: "all" as const, label: "All", icon: "Layers" }]} />
+            <Button size="sm" title={`All · ${counts ? (counts.complete ? counts.total : `${counts.total}+`) : issues.length}`} chosen={status === null} onPress={() => changeStatus(null)} />
             {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, statusTypeFor(name), t) }} />}
-              onPress={() => setStatus(status === name ? null : name)} />)}
+              onPress={() => changeStatus(status === name ? null : name)} />)}
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
             <FieldLabel title="Sort" icon="ArrowDownUp" t={t} />
@@ -447,7 +472,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               options={[{ value: "updatedAt" as DateField, label: "Updated", icon: "Clock" }, { value: "createdAt" as DateField, label: "Created", icon: "Calendar" }]} />
             <Segmented t={t} label="Sort direction" value={dateDirection} onChange={(value) => setDateDirection(value)}
               options={[{ value: "newest" as DateDirection, label: "Newest", icon: "ArrowDown" }, { value: "oldest" as DateDirection, label: "Oldest", icon: "ArrowUp" }]} />
-            {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { setStatus(null); setQuery(""); }} />}
+            {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} />}
           </View>
         </View>
 
@@ -457,8 +482,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         </View>
 
         {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
-          description={issues.length ? "Try another status or a different search term." : "Assigned tickets will appear here as soon as Linear has them."}
-          action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { setStatus(null); setQuery(""); }} /> : undefined} />}
+          description={issues.length ? "Try another status or a different search term." : scope === "active" ? "No active assigned tickets right now. Switch the scope to All to include completed and canceled work." : "Assigned tickets will appear here as soon as Linear has them."}
+          action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} /> : undefined} />}
 
         {(!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
           {!layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 11, backgroundColor: colors.surface2 }}>
@@ -507,7 +532,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         </View>}
 
         {cursor && <View style={{ ...t.card, alignItems: "center", gap: 10 }}>
-          <Text style={{ ...t.muted, textAlign: "center" }}>Filters and sorting apply to loaded tickets. Load all to include every assignment.</Text>
+          <Text style={{ ...t.muted, textAlign: "center" }}>Search and sorting apply to loaded tickets. Load all to include every assignment.</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
             <Button title="Load more" icon="ChevronDown" onPress={() => void run("Loading tickets", async () => { await loadIssues(cursor); })} />
             <Button title="Load all tickets" icon="Layers" onPress={() => void run("Loading all tickets", loadAllIssues)} />

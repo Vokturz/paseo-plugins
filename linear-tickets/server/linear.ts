@@ -58,8 +58,8 @@ export const VIEWER_QUERY = `query viewerCheck {
   viewer { id }
 }`;
 
-export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String) {
-  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: { assignee: { isMe: { eq: true } } }) {
+export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String, $filter: IssueFilter) {
+  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: $filter) {
     nodes {
       id
       identifier
@@ -77,6 +77,26 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String)
     pageInfo { hasNextPage endCursor }
   }
 }`;
+
+const COUNT_ISSUES_QUERY = `query countIssues($first: Int!, $after: String) {
+  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: { assignee: { isMe: { eq: true } } }) {
+    nodes { state { name type } }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+// The list filter is built in TypeScript so it stays deterministic (deduped, sorted)
+// across caching, tests and request logging. An explicit state-name selection always
+// wins over the "active only" default: picking the Done chip means seeing Done tickets.
+export function listIssueFilter(stateNames?: string[], activeOnly?: boolean): Record<string, unknown> {
+  const filter: Record<string, unknown> = { assignee: { isMe: { eq: true } } };
+  const state: Record<string, unknown> = {};
+  const names = [...new Set((stateNames ?? []).map((name) => name.trim()).filter(Boolean))].sort();
+  if (names.length) state.name = { in: names };
+  else if (activeOnly) state.type = { nin: ["completed", "canceled"] };
+  if (Object.keys(state).length) filter.state = state;
+  return filter;
+}
 
 export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
   issue(id: $id) {
@@ -140,9 +160,39 @@ export class LinearService {
     return work(key);
   }
 
-  async issues(cursor?: string) {
+  async issues(cursor?: string, stateNames?: string[], activeOnly?: boolean) {
     return this.withKey(async (key) =>
-      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null })).issues));
+      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, activeOnly) })).issues));
+  }
+
+  // Linear's GraphQL exposes no aggregation, so chip counts come from a bounded pass over
+  // every assignment (25 pages x 50). `complete` is false when the cap was hit; the client
+  // then shows counts as a lower bound instead of pretending they are exact.
+  async countIssues(): Promise<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean }> {
+    return this.withKey(async (key) => {
+      const byName: Record<string, number> = {};
+      const byType: Record<string, number> = {};
+      let total = 0;
+      let after: string | null = null;
+      let complete = false;
+      for (let page = 0; page < 25; page++) {
+        const data = record(await this.post(key, COUNT_ISSUES_QUERY, { first: 50, after }));
+        const pageData = record(data.issues);
+        for (const node of Array.isArray(pageData.nodes) ? (pageData.nodes as unknown[]) : []) {
+          if (!node || typeof node !== "object") continue;
+          const state = (node as { state?: { name?: unknown; type?: unknown } }).state;
+          const name = state && typeof state.name === "string" && state.name ? state.name : "No status";
+          const type = state && typeof state.type === "string" && state.type ? state.type : "unknown";
+          byName[name] = (byName[name] ?? 0) + 1;
+          byType[type] = (byType[type] ?? 0) + 1;
+          total++;
+        }
+        const info = pageData.pageInfo && typeof pageData.pageInfo === "object" ? pageData.pageInfo as { hasNextPage?: unknown; endCursor?: unknown } : {};
+        after = info.hasNextPage === true && typeof info.endCursor === "string" && info.endCursor ? info.endCursor : null;
+        if (!after) { complete = true; break; } // the loop exits at the cap with more pages still available
+      }
+      return { total, byName, byType, complete };
+    });
   }
 
   async detail(id: string): Promise<TicketDetail> {
