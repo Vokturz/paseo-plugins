@@ -9,6 +9,7 @@ import { filterIssues, formatIssueDate, issueStatus, statusCounts, type DateDire
 import { ChoicePicker } from "./choice-picker";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { ActionButton, BrandMark, FieldLabel, ProviderMark, SectionHeading, StatusBadge } from "./ui";
+import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
 
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
@@ -243,7 +244,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       {selected ? <>
         <View style={styles.row}>
           <Button icon="ArrowLeft" title="Assigned tickets" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
-          {/^https:\/\/linear\.app\//.test(selected.url) && <Button icon="ExternalLink" title="Open in Linear" onPress={() => void run("Opening Linear", async () => { await Linking.openURL(selected.url); })} />}
+          {/^https:\/\/linear\.app\//.test(selected.url) && <Button icon="ExternalLink" title="Open in Linear" onPress={() => void run("Opening Linear", async () => { await openExternalUrl(selected.url, { platform: layout.platform, linking: Linking }); })} />}
         </View>
         <View style={styles.detailLayout}>
         <View style={{ ...styles.card, flex: layout.compact ? undefined : 1.15, width: layout.compact ? "100%" : undefined, minWidth: 0, borderTopWidth: 3, borderTopColor: colors.accent }}>
@@ -256,7 +257,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           {detailLoading && <ActivityIndicator color={colors.accent} />}
           {detailError && <><Text style={styles.error}>{detailError}</Text><Button icon="RefreshCw" title="Retry ticket details" onPress={() => setDetailVersion((value) => value + 1)} /></>}
           {detail && <>
-            <MarkdownPreview markdown={detail.issue.description || "No description provided."} theme={theme} />
+            <MarkdownPreview markdown={detail.issue.description || "No description provided."} theme={theme} platform={layout.platform} />
             {detail.warnings.map((warning) => <Text key={warning} style={styles.error}>{warning}</Text>)}
             <Button icon="FileText" title={showContext ? "Hide agent context" : "Preview agent context"} onPress={() => setShowContext(!showContext)} />
             {showContext && <ScrollView style={{ maxHeight: 320, backgroundColor: colors.surface0, borderRadius: 10 }} contentContainerStyle={{ padding: 14 }} nestedScrollEnabled><Text selectable style={{ ...styles.muted, fontFamily: "monospace", fontSize: 11 }}>{detail.context}</Text></ScrollView>}
