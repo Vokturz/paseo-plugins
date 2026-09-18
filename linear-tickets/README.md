@@ -52,7 +52,10 @@ branches use their locally fetched state; fetch in the project first if you need
 the newest remote commits. Projects without Git use their project directory.
 
 The launch fetches fresh details, relationships and comments through Linear's GraphQL API.
-The JSON response is preserved in the prompt, including the description and any
+Relationships arrive in both directions — links the ticket makes and links pointing at it
+(blocks, blocked by, related, duplicates, duplicated by) — and appear as a compact
+**Relationships** list above the JSON snapshot, so the agent sees blockers before starting
+work. The JSON response is preserved in the prompt, including the description and any
 returned links. Linked documents and attachments are not downloaded. If comments
 are unavailable, the preview and agent prompt say so. Context over 200,000 characters
 is rejected rather than silently truncated.

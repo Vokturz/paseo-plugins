@@ -94,7 +94,8 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     updatedAt
     parent { id identifier title url }
     children(first: 50) { nodes { id identifier title url } }
-    relations(first: 50) { nodes { type issue { id identifier title } relatedIssue { id identifier title } } }
+    relations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
+    inverseRelations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
     attachments(first: 50) { nodes { id title url } }
     documents(first: 50) { nodes { id title url } }
   }

@@ -6,7 +6,7 @@ import { test, type TestContext } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
 import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOptions } from "@getpaseo/client";
-import { buildContext, buildPrompt, issuePage, normalizeIssue, connection } from "./context";
+import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships } from "./context";
 import { Credentials } from "./credentials";
 import { Launcher } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
@@ -136,6 +136,73 @@ test("prompt preserves description, relationships, comments, user instructions a
   assert.ok(prompt.includes("Some context unavailable"));
   assert.ok(prompt.includes("external task data"));
   assert.throws(() => buildContext({ description: "x".repeat(200_001) }, []), /too large/);
+});
+
+test("relationships normalize relations and inverse relations into directed, de-duplicated statements", () => {
+  const both = relationships({
+    id: "issue-1",
+    relations: { nodes: [
+      { type: "blocks", issue: { id: "issue-1" }, relatedIssue: { id: "issue-2", identifier: "ENG-43", title: "Blocked work", url: "https://linear.app/example/issue/ENG-43" } },
+      { type: "duplicate", issue: { id: "issue-1" }, relatedIssue: { id: "issue-3", identifier: "ENG-44", title: "Copy ticket" } },
+      { type: "related", issue: { id: "issue-1" }, relatedIssue: { id: "issue-4", identifier: "ENG-45", title: "Nearby work" } },
+    ] },
+    inverseRelations: { nodes: [
+      { type: "blocks", issue: { id: "issue-5", identifier: "ENG-46", title: "Upstream" }, relatedIssue: { id: "issue-1" } },
+      { type: "duplicated", issue: { id: "issue-6", identifier: "ENG-47", title: "The copy" }, relatedIssue: { id: "issue-1" } },
+      { type: "related", issue: { id: "issue-7", identifier: "ENG-48", title: "Nearby too" }, relatedIssue: { id: "issue-1" } },
+    ] },
+  });
+  assert.deepEqual(both, [
+    { direction: "blocks", identifier: "ENG-43", title: "Blocked work", url: "https://linear.app/example/issue/ENG-43" },
+    { direction: "duplicates", identifier: "ENG-44", title: "Copy ticket" },
+    { direction: "related to", identifier: "ENG-45", title: "Nearby work" },
+    { direction: "blocked by", identifier: "ENG-46", title: "Upstream" },
+    { direction: "duplicated by", identifier: "ENG-47", title: "The copy" },
+    { direction: "related to", identifier: "ENG-48", title: "Nearby too" },
+  ]);
+  // The OW-1731 shape: no forward relations, inverse-only must still surface.
+  const inverseOnly = relationships({
+    id: "issue-1",
+    relations: { nodes: [] },
+    inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] },
+  });
+  assert.deepEqual(inverseOnly, [{ direction: "related to", identifier: "OW-1732", title: "Other ticket" }]);
+  // Relations-only still works, and unresolvable sides fall back to the list's direction.
+  const forwardOnly = relationships({
+    id: "issue-1",
+    relations: { nodes: [{ type: "blocks", issue: null, relatedIssue: { id: "issue-2", identifier: "ENG-43", title: "Blocked work" } }] },
+  });
+  assert.deepEqual(forwardOnly, [{ direction: "blocks", identifier: "ENG-43", title: "Blocked work" }]);
+  // Self-referencing entries and identical (direction, otherId) pairs are not emitted twice.
+  const duplicated = relationships({
+    id: "issue-1",
+    relations: { nodes: [
+      { type: "related", issue: { id: "issue-1" }, relatedIssue: { id: "issue-1" } },
+      { type: "related", issue: { id: "issue-1" }, relatedIssue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" } },
+    ] },
+    inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] },
+  });
+  assert.deepEqual(duplicated, [{ direction: "related to", identifier: "OW-1732", title: "Other ticket" }]);
+  // Missing or absent payloads produce nothing, never a crash.
+  assert.deepEqual(relationships({ id: "issue-1" }), []);
+  assert.deepEqual(relationships({}), []);
+  assert.deepEqual(relationships(null), []);
+});
+
+test("prompts render a relationships block above the snapshot only when the ticket has relationships", () => {
+  const inverseOnly = { ...rawIssue, relations: { nodes: [] }, inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] } };
+  const withRelations = { issue: normalizeIssue(inverseOnly), context: buildContext(inverseOnly, []), warnings: [] };
+  const prompt = buildPrompt(withRelations, "");
+  assert.ok(prompt.includes("Relationships:\n- related to OW-1732: Other ticket"));
+  assert.ok(prompt.indexOf("Relationships:") < prompt.indexOf("Linear ticket snapshot (JSON):"));
+  const template = "Handle {{ticket}}.\n\n{{instructions}}\n\n{{context}}";
+  const templated = buildPrompt(withRelations, "", template);
+  assert.ok(templated.includes("Relationships:\n- related to OW-1732: Other ticket"));
+  assert.ok(templated.indexOf("Relationships:") < templated.indexOf(`"id": "issue-1"`), "relationships precede the JSON snapshot in template prompts");
+  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [] };
+  const plain = buildPrompt(without, "");
+  assert.ok(!plain.includes("Relationships:"), "no empty Relationships header");
+  assert.ok(!buildPrompt("raw context string", "").includes("Relationships:"));
 });
 
 test("a custom default prompt template renders ticket, instructions and context in place", () => {
