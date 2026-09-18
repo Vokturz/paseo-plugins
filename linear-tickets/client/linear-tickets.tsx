@@ -3,7 +3,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
+import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
 import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
@@ -28,6 +28,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const getBranches = useRpc(branchesRpc);
   const getStatus = useRpc(statusRpc), connect = useRpc(connectRpc), disconnect = useRpc(disconnectRpc);
   const getIssues = useRpc(listIssuesRpc), getIssuesCount = useRpc(countIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
+  const searchAll = useRpc(searchIssuesRpc);
   const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templateText, setTemplateText] = useState("");
@@ -38,6 +39,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [issues, setIssues] = useState<Issue[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [counts, setCounts] = useState<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean } | null>(null);
+  const [searchResults, setSearchResults] = useState<Issue[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchVersion, setSearchVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [scope, setScope] = useState<"active" | "all">("active");
@@ -169,6 +174,23 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     return () => { cancelled = true; };
   }, [selected, getDetail, detailVersion]);
 
+  // Workspace-wide search: a short pause after typing, then Linear's own search over every
+  // team the key can see. Results render in their own section, de-duplicated against the
+  // loaded assignments; the local list keeps its fast client-side filtering.
+  useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2 || !connection?.connected) { setSearchResults([]); setSearchError(null); return; }
+    setSearching(true); setSearchError(null);
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      void searchAll({ term })
+        .then((page) => { if (!cancelled) setSearchResults(page.issues); })
+        .catch((error) => { if (!cancelled) setSearchError(message(error)); })
+        .finally(() => { if (!cancelled) setSearching(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(handle); setSearching(false); };
+  }, [query, connection?.connected, searchAll, searchVersion]);
+
   const project = projects.find((item) => item.projectId === projectId);
   useEffect(() => {
     let cancelled = false;
@@ -201,6 +223,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const colors = t.colors;
 
   const visible = filterIssues(issues, query, status, dateField, dateDirection);
+  const searchTerm = query.trim();
+  const loadedIds = useMemo(() => new Set(issues.map((issue) => issue.id)), [issues]);
+  const remoteVisible = searchResults.filter((issue) => !loadedIds.has(issue.id));
   // Chips: server-side counts across all assignments once the count pass lands; until then
   // (or if it failed) fall back to the distinct names in the loaded pages.
   const statuses: [string, number][] = counts
@@ -255,6 +280,35 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       {chips.map((label) => <LabelChip key={label} label={label} t={t} />)}
       {extra > 0 && <Text style={t.muted}>+{extra}</Text>}
     </View>;
+  };
+
+  const renderIssueRow = (issue: Issue, index: number) => {
+    const isHovered = hovered === issue.id;
+    return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${formatRelativeDate(issue[dateField])}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
+      onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
+      style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
+        {!layout.compact && <View style={{ width: 20, alignItems: "center" }}><PriorityMark priority={issue.priority} t={t} /></View>}
+        {!layout.compact && <Text style={{ color: colors.accent, width: 82, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>}
+        <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
+          {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <PriorityMark priority={issue.priority} t={t} />
+            <Text style={{ color: colors.accent, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>
+          </View>}
+          <Text numberOfLines={layout.compact ? 2 : 1} style={{ ...t.strong, fontSize: 15, lineHeight: 21 }}>{issue.title}</Text>
+          {metaLine(issue)}
+        </View>
+        {!layout.compact && <>
+          <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /></View>
+          <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField])}</Text>
+          <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
+        </>}
+        {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
+      </View>
+      {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
+      </View>}
+    </Pressable>;
   };
 
   return <SurfaceProvider t={t} busy={Boolean(busy)}><ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 28, gap: layout.compact ? 18 : 22, width: "100%", maxWidth: 1280, alignSelf: "center" }}>
@@ -313,7 +367,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <Text style={t.muted}>{connection.source === "environment" ? "Key supplied by the daemon environment (LINEAR_API_KEY)." : "Key saved on this Paseo host."}</Text>
         </View>
         {connection.source !== "environment" && <Button title="Disconnect" icon="Unplug" tone="danger" onPress={() => void run("Disconnecting", async () => {
-          setConnection(await disconnect({})); setIssues([]); setCounts(null); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
+          setConnection(await disconnect({})); setIssues([]); setCounts(null); setSearchResults([]); setSearchError(null); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
         })} />}
       </View>}
 
@@ -455,7 +509,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         <View style={{ ...t.card, gap: 16 }}>
           <View style={{ ...t.input, paddingVertical: 0, flexDirection: "row", alignItems: "center", gap: 10 }}>
             <Icon name="Search" size={17} color={colors.foregroundMuted} />
-            <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Search by title, ID, project, team or label…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 12, fontSize: 14, flex: 1, minWidth: 0 }} />
+            <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Search loaded tickets — and all of Linear…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 12, fontSize: 14, flex: 1, minWidth: 0 }} />
             {!!query && <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => setQuery("")}><Icon name="X" size={15} color={colors.foregroundMuted} /></Pressable>}
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
@@ -501,34 +555,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <View style={{ flex: 1 }} />
             <Skeleton t={t} width={86} height={18} radius={9} />
           </View>)}
-          {visible.map((issue, index) => {
-            const isHovered = hovered === issue.id;
-            return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${formatRelativeDate(issue[dateField])}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
-              onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
-              style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
-                {!layout.compact && <View style={{ width: 20, alignItems: "center" }}><PriorityMark priority={issue.priority} t={t} /></View>}
-                {!layout.compact && <Text style={{ color: colors.accent, width: 82, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>}
-                <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
-                  {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <PriorityMark priority={issue.priority} t={t} />
-                    <Text style={{ color: colors.accent, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>
-                  </View>}
-                  <Text numberOfLines={layout.compact ? 2 : 1} style={{ ...t.strong, fontSize: 15, lineHeight: 21 }}>{issue.title}</Text>
-                  {metaLine(issue)}
-                </View>
-                {!layout.compact && <>
-                  <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /></View>
-                  <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField])}</Text>
-                  <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
-                </>}
-                {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
-              </View>
-              {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
-              </View>}
-            </Pressable>;
-          })}
+          {visible.map((issue, index) => renderIssueRow(issue, index))}
         </View>}
 
         {cursor && <View style={{ ...t.card, alignItems: "center", gap: 10 }}>
@@ -537,6 +564,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <Button title="Load more" icon="ChevronDown" onPress={() => void run("Loading tickets", async () => { await loadIssues(cursor); })} />
             <Button title="Load all tickets" icon="Layers" onPress={() => void run("Loading all tickets", loadAllIssues)} />
           </View>
+        </View>}
+
+        {searchTerm.length >= 2 && (searching || searchResults.length > 0 || searchError) && <View style={{ ...t.card, gap: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+            <SectionHeading title="Across Linear" subtitle={`Workspace-wide matches for “${searchTerm}”`} icon="Search" t={t} />
+            {searching && <ActivityIndicator color={colors.accent} size="small" />}
+          </View>
+          {searchError && <Callout t={t} tone="danger" message={searchError} action={<Button title="Retry" icon="RefreshCw" size="sm" onPress={() => setSearchVersion((value) => value + 1)} />} />}
+          {remoteVisible.length ? <View style={{ backgroundColor: colors.surface1, borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+            {remoteVisible.map((issue, index) => renderIssueRow(issue, index))}
+          </View> : !searching && !searchError && <Text style={t.muted}>No other tickets in this workspace match “{searchTerm}”.</Text>}
         </View>}
       </>}
     </>}

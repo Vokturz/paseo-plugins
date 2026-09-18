@@ -10,8 +10,8 @@ import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relat
 import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
-import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, listIssueFilter, type Post } from "./linear";
-import { countIssuesRpc, listIssuesRpc } from "../shared/contracts";
+import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, listIssueFilter, type Post } from "./linear";
+import { countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
 // and the relationship fields the detail query requests.
@@ -39,7 +39,7 @@ const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", in
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -354,6 +354,27 @@ test("list and count RPC contracts validate their inputs and outputs", () => {
   assert.equal(countIssuesRpc.input.safeParse({}).success, true);
   assert.equal(countIssuesRpc.output.safeParse({ total: 3, byName: { a: 3 }, byType: { backlog: 3 }, complete: true }).success, true);
   assert.equal(countIssuesRpc.output.safeParse({ total: -1, byName: {}, byType: {}, complete: true }).success, false);
+  assert.equal(searchIssuesRpc.input.safeParse({ term: "ab" }).success, true);
+  assert.equal(searchIssuesRpc.input.safeParse({ term: "a" }).success, false);
+  assert.equal(searchIssuesRpc.input.safeParse({ term: "x".repeat(201) }).success, false);
+});
+
+test("workspace search forwards the trimmed term and normalizes a result page", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return { searchIssues: { nodes: [rawIssue], pageInfo: { hasNextPage: true, endCursor: "s2" } } };
+  };
+  const service = mockLinear(post);
+  const page = await service.searchIssues("  pr template  ");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].query, SEARCH_ISSUES_QUERY);
+  assert.deepEqual(calls[0].variables, { term: "pr template", first: 50, after: null });
+  assert.equal(page.nextCursor, "s2");
+  assert.equal(page.issues[0].identifier, "ENG-42");
+  const next = await service.searchIssues("pr template", "s2");
+  assert.deepEqual(calls[1].variables, { term: "pr template", first: 50, after: "s2" });
+  assert.equal(next.nextCursor, "s2");
 });
 
 test("details fetch relations and paginated comments using the resolved issue ID", async () => {

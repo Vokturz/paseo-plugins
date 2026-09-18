@@ -63,6 +63,12 @@ export const countIssuesRpc = defineRpc({
   }),
 });
 
+export const searchIssuesRpc = defineRpc({
+  name: "linear.search-issues",
+  input: z.object({ term: z.string().min(2).max(200), cursor: z.string().optional() }),
+  output: z.object({ issues: z.array(issueSchema), nextCursor: z.string().nullable() }),
+});
+
 export const issueContextRpc = defineRpc({
   name: "linear.issue-context",
   input: z.object({ id: z.string().min(1) }),

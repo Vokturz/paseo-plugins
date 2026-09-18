@@ -1,7 +1,8 @@
 # Linear tickets
 
-A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you,
-and starts an agent with the ticket details and comments in its first prompt.
+A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you
+(filtered and searched server-side across your workspace), and starts an agent with the
+ticket details, comments and relationships in its first prompt.
 
 ## Install
 
@@ -39,10 +40,12 @@ canceled states are hidden server-side) with a one-tap **All** switch. The statu
 chips show counts across *all* of your assignments — Linear's GraphQL exposes no
 aggregation, so they come from a bounded server pass (25 pages × 50; counts show a
 “+” when your assignments exceed that) and selecting a chip filters the list
-server-side by that exact state name. Search by title, ID, project, team or label,
-then sort by **Updated** or **Created**, **Newest / Oldest**; missing dates sort
-last. Search and sorting apply to the loaded tickets; choose **Load all tickets**
-to include every assignment. Archived tickets are excluded.
+server-side by that exact state name. The search box filters the loaded tickets
+instantly and, from two characters up, also runs Linear's workspace-wide search:
+its matches appear in a separate **Across Linear** section, and tickets already on
+the list are not repeated there. Sort by **Updated** or **Created**, then **Newest /
+Oldest**; missing dates sort last. Sorting applies to the loaded tickets; choose
+**Load all tickets** to include every assignment. Archived tickets are excluded.
 
 Rows show the ticket's priority, a status colour and icon for its workflow state,
 label chips and a relative timestamp ("3h ago"), with the absolute date in the

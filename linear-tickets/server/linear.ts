@@ -85,6 +85,28 @@ const COUNT_ISSUES_QUERY = `query countIssues($first: Int!, $after: String) {
   }
 }`;
 
+// Same field set as the list query so results normalize identically. Linear's search
+// covers every team the key can see, not just the user's assignments.
+export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: Int!, $after: String) {
+  searchIssues(term: $term, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      state { name type }
+      priorityLabel
+      project { name identifier url }
+      team { name key }
+      labels(first: 50) { nodes { id name } }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
 // The list filter is built in TypeScript so it stays deterministic (deduped, sorted)
 // across caching, tests and request logging. An explicit state-name selection always
 // wins over the "active only" default: picking the Done chip means seeing Done tickets.
@@ -193,6 +215,11 @@ export class LinearService {
       }
       return { total, byName, byType, complete };
     });
+  }
+
+  async searchIssues(term: string, cursor?: string) {
+    return this.withKey(async (key) =>
+      issuePage(record(await this.post(key, SEARCH_ISSUES_QUERY, { term: term.trim(), first: 50, after: cursor ?? null })).searchIssues));
   }
 
   async detail(id: string): Promise<TicketDetail> {
