@@ -80,8 +80,8 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String,
   }
 }`;
 
-const COUNT_ISSUES_QUERY = `query countIssues($first: Int!, $after: String) {
-  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: { assignee: { isMe: { eq: true } } }) {
+const COUNT_ISSUES_QUERY = `query countIssues($first: Int!, $after: String, $filter: IssueFilter) {
+  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: $filter) {
     nodes { state { name type } }
     pageInfo { hasNextPage endCursor }
   }
@@ -113,13 +113,14 @@ export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: I
 
 // The list filter is built in TypeScript so it stays deterministic (deduped, sorted)
 // across caching, tests and request logging. An explicit state-name selection always
-// wins over the "active only" default: picking the Done chip means seeing Done tickets.
-export function listIssueFilter(stateNames?: string[], activeOnly?: boolean): Record<string, unknown> {
+// wins over the default scope: picking the Done chip means seeing Done tickets. When
+// closed states are not shown, completed, canceled and duplicated work is hidden.
+export function listIssueFilter(stateNames?: string[], showClosed?: boolean): Record<string, unknown> {
   const filter: Record<string, unknown> = { assignee: { isMe: { eq: true } } };
   const state: Record<string, unknown> = {};
   const names = [...new Set((stateNames ?? []).map((name) => name.trim()).filter(Boolean))].sort();
   if (names.length) state.name = { in: names };
-  else if (activeOnly) state.type = { nin: ["completed", "canceled"] };
+  else if (showClosed !== true) state.type = { nin: ["completed", "canceled", "duplicate"] };
   if (Object.keys(state).length) filter.state = state;
   return filter;
 }
@@ -215,15 +216,15 @@ export class LinearService {
     return work(key);
   }
 
-  async issues(cursor?: string, stateNames?: string[], activeOnly?: boolean) {
+  async issues(cursor?: string, stateNames?: string[], showClosed?: boolean) {
     return this.withKey(async (key) =>
-      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, activeOnly) })).issues));
+      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, showClosed) })).issues));
   }
 
   // Linear's GraphQL exposes no aggregation, so chip counts come from a bounded pass over
   // every assignment (25 pages x 50). `complete` is false when the cap was hit; the client
   // then shows counts as a lower bound instead of pretending they are exact.
-  async countIssues(): Promise<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean }> {
+  async countIssues(showClosed?: boolean): Promise<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean }> {
     return this.withKey(async (key) => {
       const byName: Record<string, number> = {};
       const byType: Record<string, number> = {};
@@ -231,7 +232,7 @@ export class LinearService {
       let after: string | null = null;
       let complete = false;
       for (let page = 0; page < 25; page++) {
-        const data = record(await this.post(key, COUNT_ISSUES_QUERY, { first: 50, after }));
+        const data = record(await this.post(key, COUNT_ISSUES_QUERY, { first: 50, after, filter: listIssueFilter(undefined, showClosed) }));
         const pageData = record(data.issues);
         for (const node of Array.isArray(pageData.nodes) ? (pageData.nodes as unknown[]) : []) {
           if (!node || typeof node !== "object") continue;

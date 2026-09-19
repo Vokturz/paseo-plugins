@@ -13,8 +13,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(statusRpc, () => linear.status());
   server.handle(connectRpc, ({ apiKey }) => linear.authenticate(apiKey));
   server.handle(disconnectRpc, () => linear.disconnect());
-  server.handle(listIssuesRpc, ({ cursor, stateNames, activeOnly }) => linear.issues(cursor, stateNames, activeOnly));
-  server.handle(countIssuesRpc, () => linear.countIssues());
+  server.handle(listIssuesRpc, async ({ cursor, stateNames }) => linear.issues(cursor, stateNames, (await settings.read()).showClosed));
+  server.handle(countIssuesRpc, async () => linear.countIssues((await settings.read()).showClosed));
   server.handle(searchIssuesRpc, ({ term, cursor }) => linear.searchIssues(term, cursor));
   server.handle(issueContextRpc, ({ id }) => linear.detail(id));
   server.handle(branchesRpc, ({ projectId }, { paseo }) => projectBranches(paseo, projectId));

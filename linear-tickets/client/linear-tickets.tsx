@@ -47,7 +47,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [searchVersion, setSearchVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [scope, setScope] = useState<"active" | "all">("active");
+  const [showClosed, setShowClosed] = useState(false);
   const [dateField, setDateField] = useState<SortField>("updatedAt");
   const [dateDirection, setDateDirection] = useState<SortDirection>("newest");
   const [view, setView] = useState<"list" | "settings">("list");
@@ -89,18 +89,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     finally { busyRef.current = false; setBusy(null); }
   };
 
-  const loadIssues = useCallback(async (next?: string, filter?: { scope: "active" | "all"; status: string | null }) => {
-    const f = filter ?? { scope, status };
+  const loadIssues = useCallback(async (next?: string, filter?: { status: string | null }) => {
+    const f = filter ?? { status };
     const page = await getIssues({
       ...(next ? { cursor: next } : {}),
       ...(f.status ? { stateNames: [f.status] } : {}),
-      activeOnly: f.scope === "active",
     });
     if (next && page.nextCursor === next) throw new Error("Linear repeated a page. Refresh the ticket list to continue.");
     setIssues((previous) => [...new Map((next ? [...previous, ...page.issues] : page.issues).map((issue) => [issue.id, issue])).values()]);
     setCursor(page.nextCursor);
     return page.nextCursor;
-  }, [getIssues, scope, status]);
+  }, [getIssues, status]);
 
   const refreshCounts = useCallback(async () => {
     try { setCounts(await getIssuesCount({})); } catch { /* counts are non-critical; the list still loads without them */ }
@@ -166,7 +165,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   }, [getTemplate]);
 
   useEffect(() => {
-    void getSettings({}).then((value) => { setMarkInProgress(value.markInProgress); }, () => {});
+    void getSettings({}).then((value) => { setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed); }, () => {});
   }, [getSettings]);
 
   useEffect(() => {
@@ -251,11 +250,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           : !detail ? "Loading ticket details…" : "";
   const changeStatus = (name: string | null) => {
     setStatus(name); setIssues([]); setCursor(null);
-    void run("Loading tickets", async () => { await loadIssues(undefined, { scope, status: name }); });
-  };
-  const changeScope = (next: "active" | "all") => {
-    setScope(next); setIssues([]); setCursor(null);
-    void run("Loading tickets", async () => { await loadIssues(undefined, { scope: next, status }); });
+    void run("Loading tickets", async () => { await loadIssues(undefined, { status: name }); });
   };
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
@@ -324,7 +319,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   };
 
   const settingsCard = <View style={{ ...t.card, gap: 14 }}>
-    <SectionHeading title="Settings" subtitle="Saved on this host and applied to new launches." icon="Settings" t={t} />
+    <SectionHeading title="Settings" subtitle="Saved on this host and applied to the ticket list and new launches." icon="Settings" t={t} />
     <FieldLabel title="Ticket status" icon="ListTodo" hint="when the agent starts" t={t} />
     <Button title={markInProgress ? "Mark the ticket In Progress when the agent starts" : "Keep the ticket in its current state"} icon={markInProgress ? "Check" : "CircleDashed"} stretch chosen={markInProgress}
       onPress={() => void run("Saving setting", async () => {
@@ -333,6 +328,18 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         setMarkInProgress((await saveSettings({ markInProgress: next })).markInProgress);
       })} />
     <Text style={t.muted}>Off keeps the plugin read-only. The ticket only moves when its team has an In Progress state and it is not already in one.</Text>
+    <Divider t={t} spaced />
+    <FieldLabel title="Tickets shown" icon="Eye" hint="in the list and the status counts" t={t} />
+    <Button title={showClosed ? "Show completed, canceled and duplicated tickets" : "Hide completed, canceled and duplicated tickets"} icon={showClosed ? "Check" : "CircleDashed"} stretch chosen={showClosed}
+      onPress={() => void run("Updating ticket list", async () => {
+        const next = !showClosed;
+        setShowClosed(next);
+        setShowClosed((await saveSettings({ showClosed: next })).showClosed);
+        setStatus(null); setIssues([]); setCursor(null);
+        await loadIssues(undefined, { status: null });
+        void refreshCounts();
+      })} />
+    <Text style={t.muted}>Off keeps the list focused on open work; finished, canceled and duplicated tickets stay hidden from the list and the counts.</Text>
     <Divider t={t} spaced />
     <FieldLabel title="Default prompt" icon="PenLine" hint="the system prompt used when you start an agent" t={t} />
     {templateOpen ? <View style={{ gap: 8 }}>
@@ -552,8 +559,6 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <FieldLabel title="Status" icon="ListFilter" t={t} />
-            <Segmented t={t} label="Scope" value={scope} onChange={(value) => changeScope(value as "active" | "all")}
-              options={[{ value: "active" as const, label: "Active", icon: "Zap" }, { value: "all" as const, label: "All", icon: "Layers" }]} />
             <Button size="sm" title={`All · ${counts ? (counts.complete ? counts.total : `${counts.total}+`) : issues.length}`} chosen={status === null} onPress={() => changeStatus(null)} />
             {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, statusTypeFor(name), t) }} />}
               onPress={() => changeStatus(status === name ? null : name)} />)}
@@ -569,12 +574,12 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         </View>
 
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
-          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
+          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{!showClosed ? " (open)" : ""}{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
           <Text style={t.muted}>Sorted by {dateField === "priority" ? (dateDirection === "newest" ? "priority · highest first" : "priority · lowest first") : dateField === "dueDate" ? (dateDirection === "newest" ? "due date · latest first" : "due date · soonest first") : dateField === "updatedAt" ? (dateDirection === "newest" ? "last updated · newest first" : "last updated · oldest first") : dateDirection === "newest" ? "date created · newest first" : "date created · oldest first"}</Text>
         </View>
 
         {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
-          description={issues.length ? "Try another status or a different search term." : scope === "active" ? "No active assigned tickets right now. Switch the scope to All to include completed and canceled work." : "Assigned tickets will appear here as soon as Linear has them."}
+          description={issues.length ? "Try another status or a different search term." : showClosed ? "Assigned tickets will appear here as soon as Linear has them." : "No open tickets are assigned to you right now. Enable the closed-states setting to also see finished work."}
           action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} /> : undefined} />}
 
         {(!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>

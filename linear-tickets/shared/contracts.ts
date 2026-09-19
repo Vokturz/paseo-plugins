@@ -41,19 +41,21 @@ export const disconnectRpc = defineRpc({ name: "linear.disconnect", input: z.obj
 
 export const listIssuesRpc = defineRpc({
   name: "linear.list-issues",
-  // stateNames is a server-side selection (status chips); activeOnly is the default scope.
-  // An explicit name selection takes precedence over activeOnly in the built filter.
+  // stateNames is a server-side selection (status chips); it takes precedence over the
+  // closed-states setting in the built filter (picking the Done chip shows Done tickets).
+  // Whether completed/canceled/duplicated tickets are shown comes from the saved setting,
+  // read server-side, so the client never sends a scope.
   input: z.object({
     cursor: z.string().optional(),
     stateNames: z.array(z.string()).max(12).optional(),
-    activeOnly: z.boolean().optional(),
   }),
   output: z.object({ issues: z.array(issueSchema), nextCursor: z.string().nullable() }),
 });
 
 // No aggregation exists in Linear's GraphQL: this is a bounded server pass (25 pages x 50)
-// over every assignment. `complete` is false when the cap was reached, in which case the
-// client presents the numbers as a lower bound rather than exact counts.
+// over every assignment, respecting the closed-states setting. `complete` is false when
+// the cap was reached, in which case the client presents the numbers as a lower bound
+// rather than exact counts.
 export const countIssuesRpc = defineRpc({
   name: "linear.count-issues",
   input: z.object({}),
@@ -119,10 +121,10 @@ export const setDefaultPromptRpc = defineRpc({
 export const getSettingsRpc = defineRpc({
   name: "linear.get-settings",
   input: z.object({}),
-  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean() }),
+  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean(), showClosed: z.boolean() }),
 });
 export const setSettingsRpc = defineRpc({
   name: "linear.set-settings",
-  input: z.object({ template: z.string().max(8000).optional(), markInProgress: z.boolean().optional() }),
-  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean() }),
+  input: z.object({ template: z.string().max(8000).optional(), markInProgress: z.boolean().optional(), showClosed: z.boolean().optional() }),
+  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean(), showClosed: z.boolean() }),
 });

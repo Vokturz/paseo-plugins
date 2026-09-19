@@ -36,12 +36,13 @@ paseo plugin reload linear-tickets
    provider's change mode and the model's reasoning level, then optionally add instructions.
 4. Select **Start agent with ticket**, then **Open agent**.
 
-Tickets load in pages of 50, scoped to **Active** work by default (completed and
-canceled states are hidden server-side) with a one-tap **All** switch. The status
-chips show counts across *all* of your assignments — Linear's GraphQL exposes no
-aggregation, so they come from a bounded server pass (25 pages × 50; counts show a
-“+” when your assignments exceed that) and selecting a chip filters the list
-server-side by that exact state name. The search box filters the loaded tickets
+Tickets load in pages of 50. By default they cover **open work only** — completed,
+canceled and duplicated states are hidden server-side; the **Settings** menu (gear in
+the header) has a toggle to include them. The status chips show counts over exactly
+what the list shows, following that setting — Linear's GraphQL exposes no aggregation,
+so they come from a bounded server pass (25 pages × 50; counts show a “+” when your
+assignments exceed that) and selecting a chip filters the list server-side by that
+exact state name. The search box filters the loaded tickets
 instantly and, from two characters up, also runs Linear's workspace-wide search:
 its matches appear in a separate **Across Linear** section, and tickets already on
 the list are not repeated there. Sort by **Updated**, **Created**, **Due date** or
@@ -90,6 +91,17 @@ Images are loaded by the Paseo client only for display and are not downloaded in
 agent's workspace or added to its prompt. Provider badges, available modes, and reasoning
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
 out of the form.
+
+## Settings
+
+The **Settings** menu (gear icon in the header, next to the connection and refresh
+buttons) holds the plugin's per-host settings:
+
+- **Ticket status** — optionally mark the ticket In Progress when the agent starts
+  (off by default; see below).
+- **Tickets shown** — include completed, canceled and duplicated tickets in the list
+  and the status counts (off by default, keeping the list focused on open work).
+- **Default prompt** — replace the built-in launch prompt with a template (below).
 
 ## Customizing the launch prompt
 

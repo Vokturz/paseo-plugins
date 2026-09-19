@@ -237,14 +237,14 @@ test("settings persist the template with private permissions and reset removes i
   const path = join(directory, "settings.json");
   try {
     const settings = new Settings(path);
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
     const saved = await settings.save("Handle {{ticket}}\n{{context}}");
     assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await settings.read(), saved);
-    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false });
+    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false });
     await assert.rejects(readFile(path), { code: "ENOENT" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -254,14 +254,17 @@ test("the mark-in-progress setting round-trips without disturbing the saved temp
   try {
     const settings = new Settings(path);
     await settings.patch({ markInProgress: true });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false });
     await settings.save("Handle {{ticket}}\n{{context}}");
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true });
-    // Clearing the template keeps the flag; clearing the flag with no template removes the file.
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false });
+    // The closed-states setting round-trips the same way and never disturbs the other fields.
+    await settings.patch({ showClosed: true });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true });
+    // Clearing the template keeps the flags; clearing the last flag with no template removes the file.
     await settings.patch({ template: "" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true });
-    await settings.patch({ markInProgress: false });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true });
+    await settings.patch({ markInProgress: false, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
     await assert.rejects(readFile(path), { code: "ENOENT" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -309,14 +312,14 @@ test("ticket listing requests the authenticated user's assignments and forwards 
     assert.equal(call.key, "test-key");
     assert.equal(call.query, LIST_ISSUES_QUERY);
   }
-  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
-  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2", filter: { assignee: { isMe: { eq: true } } } });
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2", filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
 });
 
-test("the list filter is deterministic; an explicit status selection beats active-only", () => {
-  assert.deepEqual(listIssueFilter(), { assignee: { isMe: { eq: true } } });
-  assert.deepEqual(listIssueFilter(undefined, true), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled"] } } });
-  assert.deepEqual(listIssueFilter([], true), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled"] } } });
+test("the list filter is deterministic; an explicit status selection beats the closed-states setting", () => {
+  assert.deepEqual(listIssueFilter(), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } });
+  assert.deepEqual(listIssueFilter(undefined, true), { assignee: { isMe: { eq: true } } });
+  assert.deepEqual(listIssueFilter([], false), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } });
   assert.deepEqual(listIssueFilter(["Done", "  In Progress", "Done", "  "]), { assignee: { isMe: { eq: true } }, state: { name: { in: ["Done", "In Progress"] } } });
   assert.deepEqual(listIssueFilter(["Done"], true), listIssueFilter(["Done"]));
 });
@@ -328,10 +331,12 @@ test("ticket listing forwards the built filter to Linear", async () => {
     return { issues: { nodes: [rawIssue], pageInfo: { hasNextPage: false, endCursor: null } } };
   };
   const service = mockLinear(post);
+  await service.issues();
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
   await service.issues(undefined, undefined, true);
-  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled"] } } } });
+  assert.deepEqual(calls[1].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
   await service.issues(undefined, ["In Progress"]);
-  assert.deepEqual(calls[1].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { name: { in: ["In Progress"] } } } });
+  assert.deepEqual(calls[2].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { name: { in: ["In Progress"] } } } });
 });
 
 test("issue counts aggregate across pages, skip malformed nodes, and report completeness", async () => {
@@ -351,8 +356,18 @@ test("issue counts aggregate across pages, skip malformed nodes, and report comp
   };
   const counts = await mockLinear(post).countIssues();
   assert.deepEqual(counts, { total: 4, byName: { "In Progress": 2, Done: 1, "No status": 1 }, byType: { started: 2, completed: 1, unknown: 1 }, complete: true });
-  assert.deepEqual(calls[0].variables, { first: 50, after: null });
-  assert.deepEqual(calls[1].variables, { first: 50, after: "c2" });
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "c2", filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+});
+
+test("issue counts follow the closed-states setting", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+  };
+  await mockLinear(post).countIssues(true);
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
 });
 
 test("issue counts stop at the page cap and flag the sweep as incomplete", async () => {
@@ -368,9 +383,9 @@ test("issue counts stop at the page cap and flag the sweep as incomplete", async
 });
 
 test("list and count RPC contracts validate their inputs and outputs", () => {
-  assert.equal(listIssuesRpc.input.safeParse({ stateNames: ["Done"], activeOnly: true }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ stateNames: ["Done"] }).success, true);
   assert.equal(listIssuesRpc.input.safeParse({ stateNames: Array.from({ length: 13 }, (_, i) => `s${i}`) }).success, false);
-  assert.equal(listIssuesRpc.input.safeParse({ cursor: "x", stateNames: ["a", "b"], activeOnly: false }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ cursor: "x", stateNames: ["a", "b"] }).success, true);
   assert.equal(countIssuesRpc.input.safeParse({}).success, true);
   assert.equal(countIssuesRpc.output.safeParse({ total: 3, byName: { a: 3 }, byType: { backlog: 3 }, complete: true }).success, true);
   assert.equal(countIssuesRpc.output.safeParse({ total: -1, byName: {}, byType: {}, complete: true }).success, false);
