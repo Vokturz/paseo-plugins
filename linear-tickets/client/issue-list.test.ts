@@ -25,6 +25,25 @@ test("date sort uses actual timestamps, keeps missing dates last and does not mu
   assert.deepEqual(tickets.map((item) => item.id), ["a", "b", "c", "d"]);
 });
 
+test("priority sort orders most-urgent first and keeps no-priority tickets last in both directions", () => {
+  const prioritized = [
+    normalizeIssue({ id: "p-none", title: "No priority", priority: "" }),
+    normalizeIssue({ id: "p-low", title: "Low", priority: "4" }),
+    normalizeIssue({ id: "p-urgent", title: "Urgent", priority: "1" }),
+    normalizeIssue({ id: "p-medium", title: "Medium", priority: "3" }),
+    normalizeIssue({ id: "p-high", title: "High", priority: "2" }),
+  ];
+  assert.deepEqual(filterIssues(prioritized, "", null, "priority", "newest").map((item) => item.id), ["p-urgent", "p-high", "p-medium", "p-low", "p-none"]);
+  assert.deepEqual(filterIssues(prioritized, "", null, "priority", "oldest").map((item) => item.id), ["p-low", "p-medium", "p-high", "p-urgent", "p-none"]);
+  // Label-form priorities sort the same as their numbers.
+  const labeled = [
+    normalizeIssue({ id: "l-none", title: "None", priority: "" }),
+    normalizeIssue({ id: "l-high", title: "High", priority: "High" }),
+    normalizeIssue({ id: "l-urgent", title: "Urgent", priority: "Urgent" }),
+  ];
+  assert.deepEqual(filterIssues(labeled, "", null, "priority", "newest").map((item) => item.id), ["l-urgent", "l-high", "l-none"]);
+});
+
 test("missing statuses and dates are visible, with created dates preserved by normalization", () => {
   assert.deepEqual(statusCounts([normalizeIssue({ id: "empty", title: "No status" })]), [["No status", 1]]);
   assert.equal(formatIssueDate("invalid"), "No date");

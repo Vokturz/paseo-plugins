@@ -1,14 +1,31 @@
 import type { Issue } from "../shared/contracts";
 
-export type DateField = "updatedAt" | "createdAt" | "dueDate";
-export type DateDirection = "newest" | "oldest";
+export type SortField = "updatedAt" | "createdAt" | "dueDate" | "priority";
+export type SortDirection = "newest" | "oldest";
 export const issueStatus = (issue: Issue) => issue.status.trim() || "No status";
 
-export function filterIssues(issues: Issue[], query: string, status: string | null, field: DateField, direction: DateDirection) {
+// Linear's priority scale: 1 = Urgent (most urgent) … 4 = Low; 0/missing = no priority.
+// Label forms are accepted too, since Linear returns priorities as either.
+const PRIORITY_RANKS: Record<string, number> = { "1": 0, "2": 1, "3": 2, "4": 3, urgent: 0, high: 1, medium: 2, low: 3 };
+export function priorityRank(priority: string): number {
+  const value = priority.trim();
+  if (value in PRIORITY_RANKS) return PRIORITY_RANKS[value];
+  const label = formatPriority(value).toLowerCase();
+  return label in PRIORITY_RANKS ? PRIORITY_RANKS[label] : 4;
+}
+
+export function filterIssues(issues: Issue[], query: string, status: string | null, field: SortField, direction: SortDirection) {
   const search = query.trim().toLowerCase();
   return issues.filter((issue) => (!status || issueStatus(issue) === status)
     && [issue.identifier, issue.title, issue.project, issue.team, issue.status, ...issue.labels].join(" ").toLowerCase().includes(search))
     .sort((a, b) => {
+      if (field === "priority") {
+        const left = priorityRank(a.priority), right = priorityRank(b.priority);
+        // Tickets with no priority stay last in either direction.
+        if (left === 4) return right === 4 ? 0 : 1;
+        if (right === 4) return -1;
+        return direction === "newest" ? left - right : right - left;
+      }
       const left = Date.parse(a[field] ?? ""), right = Date.parse(b[field] ?? "");
       // Missing dates stay last in either direction; equal dates keep a stable order.
       if (!Number.isFinite(left)) return Number.isFinite(right) ? 1 : 0;

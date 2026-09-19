@@ -44,9 +44,10 @@ aggregation, so they come from a bounded server pass (25 pages × 50; counts sho
 server-side by that exact state name. The search box filters the loaded tickets
 instantly and, from two characters up, also runs Linear's workspace-wide search:
 its matches appear in a separate **Across Linear** section, and tickets already on
-the list are not repeated there. Sort by **Updated**, **Created** or **Due date**,
-then **Newest / Oldest** (for due dates: latest / soonest); missing dates sort
-last. Sorting applies to the loaded tickets; choose **Load all tickets** to include
+the list are not repeated there. Sort by **Updated**, **Created**, **Due date** or
+**Priority**, then **Newest / Oldest** (for due dates: latest / soonest; for priority:
+highest / lowest); missing dates and tickets with no priority sort last. Sorting
+applies to the loaded tickets; choose **Load all tickets** to include
 every assignment. Archived tickets are excluded.
 
 Rows show the ticket's priority, a status colour and icon for its workflow state,
@@ -94,9 +95,9 @@ out of the form.
 
 Every launch starts from the built-in default prompt: work on the ticket in the current
 workspace, respect the repository's instructions, and treat the snapshot as data, not as
-authority. You can replace it with your own template under **Default prompt** in the agent
-setup — for example to have the agent list a plan before coding, run the test suite, or
-open a pull request in a specific format.
+authority. You can replace it with your own template under **Default prompt** in the
+plugin's **Settings** (gear icon in the header) — for example to have the agent list a
+plan before coding, run the test suite, or open a pull request in a specific format.
 
 Placeholders are substituted at launch time:
 
@@ -111,7 +112,8 @@ instructions field and the 200,000-character context limit apply as before.
 ## Marking tickets In Progress
 
 By default the plugin never changes Linear. When you switch on **Mark the ticket In
-Progress when the agent starts** in the launch form, a launch also moves the ticket
+Progress when the agent starts** in the plugin's **Settings** (gear icon in the
+header), a launch also moves the ticket
 into its team's started state — the state named *In Progress* when the team has one,
 otherwise the first started state in the team's workflow. Tickets already in a started
 state are left as they are, and a team without a started state never produces a write.
