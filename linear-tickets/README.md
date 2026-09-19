@@ -4,9 +4,22 @@ A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assi
 (filtered and searched server-side across your workspace), and starts an agent with the
 ticket details, comments and relationships in its first prompt.
 
+![Ticket list with status filters, search and sorting](images/02-ticket-list.png)
+![Starting an agent from a ticket](images/01-create-agent.png)
+![The launch form on mobile](images/03-create-agent-mobile.jpeg)
+
 ## Install
 
 Requires Paseo 0.8.0 or newer and Node.js 22 or newer on the daemon host.
+
+From npm, with Paseo 0.9 or newer (the pinned package and its production
+dependencies are installed for you):
+
+```sh
+paseo plugin add npm:paseo-linear-tickets@0.1.0
+```
+
+From a local checkout:
 
 ```sh
 cd linear-tickets
