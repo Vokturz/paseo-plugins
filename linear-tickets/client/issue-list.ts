@@ -1,15 +1,32 @@
 import type { Issue } from "../shared/contracts";
 
-export type DateField = "updatedAt" | "createdAt";
-export type DateDirection = "newest" | "oldest";
+export type SortField = "updatedAt" | "createdAt" | "dueDate" | "priority";
+export type SortDirection = "newest" | "oldest";
 export const issueStatus = (issue: Issue) => issue.status.trim() || "No status";
 
-export function filterIssues(issues: Issue[], query: string, status: string | null, field: DateField, direction: DateDirection) {
+// Linear's priority scale: 1 = Urgent (most urgent) … 4 = Low; 0/missing = no priority.
+// Label forms are accepted too, since Linear returns priorities as either.
+const PRIORITY_RANKS: Record<string, number> = { "1": 0, "2": 1, "3": 2, "4": 3, urgent: 0, high: 1, medium: 2, low: 3 };
+export function priorityRank(priority: string): number {
+  const value = priority.trim();
+  if (value in PRIORITY_RANKS) return PRIORITY_RANKS[value];
+  const label = formatPriority(value).toLowerCase();
+  return label in PRIORITY_RANKS ? PRIORITY_RANKS[label] : 4;
+}
+
+export function filterIssues(issues: Issue[], query: string, status: string | null, field: SortField, direction: SortDirection) {
   const search = query.trim().toLowerCase();
   return issues.filter((issue) => (!status || issueStatus(issue) === status)
     && [issue.identifier, issue.title, issue.project, issue.team, issue.status, ...issue.labels].join(" ").toLowerCase().includes(search))
     .sort((a, b) => {
-      const left = Date.parse(a[field]), right = Date.parse(b[field]);
+      if (field === "priority") {
+        const left = priorityRank(a.priority), right = priorityRank(b.priority);
+        // Tickets with no priority stay last in either direction.
+        if (left === 4) return right === 4 ? 0 : 1;
+        if (right === 4) return -1;
+        return direction === "newest" ? left - right : right - left;
+      }
+      const left = Date.parse(a[field] ?? ""), right = Date.parse(b[field] ?? "");
       // Missing dates stay last in either direction; equal dates keep a stable order.
       if (!Number.isFinite(left)) return Number.isFinite(right) ? 1 : 0;
       if (!Number.isFinite(right)) return -1;
@@ -23,6 +40,19 @@ export function statusCounts(issues: Issue[]) {
   return [...counts].sort(([a], [b]) => a.localeCompare(b));
 }
 
+/** "Todo → In Progress → Done" from the context snapshot's stateHistory (null when absent). */
+export function statusChangesText(context: string): string | null {
+  try {
+    const parsed = JSON.parse(context);
+    const history = parsed && typeof parsed === "object" ? (parsed as { stateHistory?: unknown }).stateHistory : undefined;
+    if (!Array.isArray(history)) return null;
+    const names = history
+      .map((span) => (span && typeof span === "object" ? (span as { state?: unknown }).state : null))
+      .filter((name): name is string => typeof name === "string" && Boolean(name));
+    return names.length >= 2 ? names.join(" → ") : null;
+  } catch { return null; }
+}
+
 export function formatIssueDate(value: string) {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
@@ -33,7 +63,21 @@ export function formatIssueDate(value: string) {
 // Linear workflows are user-defined, so tone matching stays generic: keywords, not exact names.
 export type StatusTone = "done" | "canceled" | "active" | "review" | "backlog" | "neutral";
 
-export function statusTone(status: string): StatusTone {
+// WorkflowState.type is an open string set (observed: backlog, unstarted, triage, started,
+// completed, duplicate, canceled), so this is a known-value fast path, not a closed enum.
+const STATUS_TYPE_TONES: Record<string, StatusTone> = {
+  backlog: "backlog",
+  unstarted: "backlog",
+  triage: "backlog",
+  started: "active",
+  completed: "done",
+  canceled: "canceled",
+  duplicate: "canceled",
+};
+
+export function statusTone(status: string, statusType = ""): StatusTone {
+  const tone = STATUS_TYPE_TONES[statusType.trim().toLowerCase()];
+  if (tone) return tone;
   const name = status.trim().toLowerCase();
   if (!name || name === "no status") return "neutral";
   if (/(^|\W)(done|complete|completed|closed|merged|deployed|released|shipped|resolved)(\W|$)/.test(name)) return "done";

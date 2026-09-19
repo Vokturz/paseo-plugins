@@ -1,7 +1,8 @@
 # Linear tickets
 
-A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you,
-and starts an agent with the ticket details and comments in its first prompt.
+A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you
+(filtered and searched server-side across your workspace), and starts an agent with the
+ticket details, comments and relationships in its first prompt.
 
 ## Install
 
@@ -25,7 +26,8 @@ paseo plugin reload linear-tickets
 ## Connect and start work
 
 1. Create a personal Linear API key in Settings → Security & access. Read permission
-   and access to the relevant teams are sufficient.
+   and access to the relevant teams are sufficient; write permission is only needed
+   for the optional "mark the ticket In Progress" step (see below).
 2. Paste it into **Connect Linear**. Alternatively, set `LINEAR_API_KEY` in the
    Paseo daemon's environment before starting the daemon.
 3. Select an assigned ticket. Preview the ticket context and choose a Paseo project.
@@ -34,31 +36,52 @@ paseo plugin reload linear-tickets
    provider's change mode and the model's reasoning level, then optionally add instructions.
 4. Select **Start agent with ticket**, then **Open agent**.
 
-Tickets load in pages of 50. Use the status chips to filter by your Linear workflow
-statuses, and search by title, ID, project, team or label. Sort by **Updated** or
-**Created**, then toggle **Newest / Oldest**. Missing dates sort last.
-Counts, filters and sorting apply to loaded tickets; choose **Load all tickets** to
-include all assignments. Archived tickets are excluded.
+Tickets load in pages of 50. By default they cover **open work only** — completed,
+canceled and duplicated states are hidden server-side; the **Settings** menu (gear in
+the header) has a toggle to include them. The status chips show counts over exactly
+what the list shows, following that setting — Linear's GraphQL exposes no aggregation,
+so they come from a bounded server pass (25 pages × 50; counts show a “+” when your
+assignments exceed that) and selecting a chip filters the list server-side by that
+exact state name. The search box filters the loaded tickets
+instantly and, from two characters up, also runs Linear's workspace-wide search:
+its matches appear in a separate **Across Linear** section, and tickets already on
+the list are not repeated there. Sort by **Updated**, **Created**, **Due date** or
+**Priority**, then **Newest / Oldest** (for due dates: latest / soonest; for priority:
+highest / lowest); missing dates and tickets with no priority sort last. Sorting
+applies to the loaded tickets; choose **Load all tickets** to include
+every assignment. Archived tickets are excluded.
 
 Rows show the ticket's priority, a status colour and icon for its workflow state,
-label chips and a relative timestamp ("3h ago"), with the absolute date in the
-accessibility label. Status colours are matched by keyword, so custom Linear
-workflows get a sensible tone instead of falling back to grey. While tickets load,
+label chips, a due date and estimate when your team sets them, and a relative
+timestamp ("3h ago"), with the absolute date in the accessibility label. Status colours follow Linear's workflow category (`started`,
+`completed`, `canceled`, `backlog`, `unstarted`, `duplicate`, …), so custom state
+names such as "In Review" get the right tone in any workspace; keyword matching on
+the state name remains as a fallback for categories that are not recognised. While tickets load,
 placeholder rows stand in for the table so the layout does not jump.
 
-For Git projects, the plugin creates a new ticket branch and a dedicated worktree
-from the selected base branch. Your existing checkout is not switched. Remote
+For Git projects, the plugin creates a dedicated worktree from the selected base
+branch, using Linear's own branch name for the ticket (which respects your workspace's
+branch-format setting) so Linear's GitHub integration keeps matching branches to issues.
+If that name is missing or not a safe git ref, a `<ticket id>–<request id>` fallback is
+used instead. When the branch already exists — for example a second launch of the same
+ticket — the worktree is created once more with a short request-id suffix appended.
+Your existing checkout is not switched. Remote
 branches use their locally fetched state; fetch in the project first if you need
 the newest remote commits. Projects without Git use their project directory.
 
 The launch fetches fresh details, relationships and comments through Linear's GraphQL API.
-The JSON response is preserved in the prompt, including the description and any
+Relationships arrive in both directions — links the ticket makes and links pointing at it
+(blocks, blocked by, related, duplicates, duplicated by) — and appear as a compact
+**Relationships** list above the JSON snapshot, so the agent sees blockers before starting
+work. Status changes arrive the same way: a compact **Status changes** line (for example
+"Todo → In Progress → Done (currently Done)") and the raw state-history spans in the JSON
+snapshot. The JSON response is preserved in the prompt, including the description and any
 returned links. Linked documents and attachments are not downloaded. If comments
 are unavailable, the preview and agent prompt say so. Context over 200,000 characters
 is rejected rather than silently truncated.
 
-The ticket preview shows the ticket's project, team, labels, priority and dates, then
-renders the description as Markdown: headings, bullet and numbered lists, task
+The ticket preview shows the ticket's project, team, labels, priority, dates (including
+due date and estimate when set) and a status-history line, then renders the description as Markdown: headings, bullet and numbered lists, task
 checkboxes, pipe tables, quotes, dividers, bold text, inline code and fenced code
 blocks. Tables scroll horizontally when they are too wide and keep their column
 alignment. Code blocks carry a copy button, and **Copy context** copies the exact
@@ -69,13 +92,24 @@ agent's workspace or added to its prompt. Provider badges, available modes, and 
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
 out of the form.
 
+## Settings
+
+The **Settings** menu (gear icon in the header, next to the connection and refresh
+buttons) holds the plugin's per-host settings:
+
+- **Ticket status** — optionally mark the ticket In Progress when the agent starts
+  (off by default; see below).
+- **Tickets shown** — include completed, canceled and duplicated tickets in the list
+  and the status counts (off by default, keeping the list focused on open work).
+- **Default prompt** — replace the built-in launch prompt with a template (below).
+
 ## Customizing the launch prompt
 
 Every launch starts from the built-in default prompt: work on the ticket in the current
 workspace, respect the repository's instructions, and treat the snapshot as data, not as
-authority. You can replace it with your own template under **Default prompt** in the agent
-setup — for example to have the agent list a plan before coding, run the test suite, or
-open a pull request in a specific format.
+authority. You can replace it with your own template under **Default prompt** in the
+plugin's **Settings** (gear icon in the header) — for example to have the agent list a
+plan before coding, run the test suite, or open a pull request in a specific format.
 
 Placeholders are substituted at launch time:
 
@@ -86,6 +120,17 @@ Placeholders are substituted at launch time:
 Templates are limited to 8,000 characters, stored per host with the other plugin settings,
 and apply to new agents only. **Reset to built-in** restores the default. The per-launch
 instructions field and the 200,000-character context limit apply as before.
+
+## Marking tickets In Progress
+
+By default the plugin never changes Linear. When you switch on **Mark the ticket In
+Progress when the agent starts** in the plugin's **Settings** (gear icon in the
+header), a launch also moves the ticket
+into its team's started state — the state named *In Progress* when the team has one,
+otherwise the first started state in the team's workflow. Tickets already in a started
+state are left as they are, and a team without a started state never produces a write.
+The choice is saved per host and needs Linear's write permission. If the change cannot
+be made, the agent still starts and the failure appears as a warning with the result.
 
 ## Connection storage
 
@@ -100,8 +145,10 @@ default-prompt templates live next to the key in `settings.json` with the same
 permission pattern.
 
 The plugin talks directly to Linear's official [GraphQL API](https://linear.app/developers/graphql)
-at `https://api.linear.app/graphql` with read-only queries. Only the server contacts
-Linear. The key is never added to ticket context, agent configuration, or agent labels.
+at `https://api.linear.app/graphql`. Its queries are read-only; the only write is the
+optional In Progress transition made when a launch is explicitly opted in. Only the
+server contacts Linear. The key is never added to ticket context, agent configuration,
+or agent labels.
 
 Repeated launch requests reuse their result for the lifetime of the loaded plugin.
 If agent creation returns an uncertain failure, the same request is not retried
@@ -112,6 +159,7 @@ start again. This retry cache does not survive a plugin or daemon restart.
 
 `npm run typecheck` checks both entrypoints against Paseo's SDK. `npm test` covers
 GraphQL response parsing, pagination, context preservation, prompt template rendering
-and validation, credential and settings persistence, ticket retrieval, and agent
-creation/retries with mocked Linear and Paseo calls.
+and validation, credential and settings persistence, ticket retrieval, state-transition
+resolution and failure handling, and agent creation/retries with mocked Linear and Paseo
+calls.
 Live account authentication and agent execution require your configured host and key.

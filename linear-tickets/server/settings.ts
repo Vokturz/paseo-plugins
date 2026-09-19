@@ -23,31 +23,56 @@ export class Settings {
     private readonly path = join(process.env.PASEO_HOME?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".paseo"), "linear-tickets", "settings.json"),
   ) {}
 
-  async read(): Promise<{ template: string | null }> {
+  private async readFile(): Promise<{ template?: string; markInProgress?: boolean; showClosed?: boolean }> {
     try {
       const value = JSON.parse(await readFile(this.path, "utf8"));
-      if (typeof value.template === "string" && value.template.trim()) return { template: value.template };
-      return { template: null };
+      return value && typeof value === "object" ? (value as { template?: string; markInProgress?: boolean; showClosed?: boolean }) : {};
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { template: null };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
       throw new Error("Could not read the saved plugin settings.");
     }
   }
 
-  async save(raw: string): Promise<{ template: string | null }> {
-    const template = normalizeTemplate(raw);
-    if (!template) {
+  async read(): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+    const value = await this.readFile();
+    return {
+      template: typeof value.template === "string" && value.template.trim() ? value.template : null,
+      markInProgress: value.markInProgress === true,
+      showClosed: value.showClosed === true,
+    };
+  }
+
+  async save(raw: string): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+    const current = await this.read();
+    return this.write({ template: normalizeTemplate(raw), markInProgress: current.markInProgress, showClosed: current.showClosed });
+  }
+
+  // Patches only the provided fields; `template: ""` clears the template (built-in default).
+  async patch(patch: { template?: string; markInProgress?: boolean; showClosed?: boolean }): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+    const current = await this.read();
+    const template = patch.template === undefined ? current.template : normalizeTemplate(patch.template);
+    const markInProgress = patch.markInProgress === undefined ? current.markInProgress : patch.markInProgress;
+    const showClosed = patch.showClosed === undefined ? current.showClosed : patch.showClosed;
+    return this.write({ template, markInProgress, showClosed });
+  }
+
+  private async write(value: { template: string | null; markInProgress: boolean; showClosed: boolean }): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+    if (!value.template && !value.markInProgress && !value.showClosed) {
       await rm(this.path, { force: true });
-      return { template: null };
+      return value;
     }
     const directory = dirname(this.path);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await chmod(directory, 0o700);
+    const fileValue: { template?: string; markInProgress?: boolean; showClosed?: boolean } = {};
+    if (value.template) fileValue.template = value.template;
+    if (value.markInProgress) fileValue.markInProgress = true;
+    if (value.showClosed) fileValue.showClosed = true;
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporary, JSON.stringify({ template }), { mode: 0o600, flag: "wx" });
+      await writeFile(temporary, JSON.stringify(fileValue), { mode: 0o600, flag: "wx" });
       await rename(temporary, this.path);
     } finally { await rm(temporary, { force: true }); }
-    return { template };
+    return value;
   }
 }

@@ -3,8 +3,8 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, connectRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, setDefaultPromptRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
-import { filterIssues, formatIssueDate, formatRelativeDate, issueStatus, statusCounts, type DateDirection, type DateField } from "./issue-list";
+import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
+import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, issueStatus, statusChangesText, statusCounts, type SortDirection, type SortField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
 import { Icon, copyText } from "@getpaseo/plugin/client/react-native";
@@ -27,8 +27,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const paseo = usePaseo();
   const getBranches = useRpc(branchesRpc);
   const getStatus = useRpc(statusRpc), connect = useRpc(connectRpc), disconnect = useRpc(disconnectRpc);
-  const getIssues = useRpc(listIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
+  const getIssues = useRpc(listIssuesRpc), getIssuesCount = useRpc(countIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
+  const searchAll = useRpc(searchIssuesRpc);
   const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
+  const getSettings = useRpc(getSettingsRpc), saveSettings = useRpc(setSettingsRpc);
+  const [markInProgress, setMarkInProgress] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templateText, setTemplateText] = useState("");
   const [templateSaved, setTemplateSaved] = useState<string | null>(null);
@@ -37,10 +40,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [key, setKey] = useState("");
   const [issues, setIssues] = useState<Issue[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  const [counts, setCounts] = useState<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean } | null>(null);
+  const [searchResults, setSearchResults] = useState<Issue[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchVersion, setSearchVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [dateField, setDateField] = useState<DateField>("updatedAt");
-  const [dateDirection, setDateDirection] = useState<DateDirection>("newest");
+  const [showClosed, setShowClosed] = useState(false);
+  const [dateField, setDateField] = useState<SortField>("updatedAt");
+  const [dateDirection, setDateDirection] = useState<SortDirection>("newest");
+  const [view, setView] = useState<"list" | "settings">("list");
   const [manageConnection, setManageConnection] = useState(false);
   const [selected, setSelected] = useState<Issue | null>(null);
   const [detail, setDetail] = useState<TicketDetail | null>(null);
@@ -79,13 +89,21 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     finally { busyRef.current = false; setBusy(null); }
   };
 
-  const loadIssues = useCallback(async (next?: string) => {
-    const page = await getIssues(next ? { cursor: next } : {});
+  const loadIssues = useCallback(async (next?: string, filter?: { status: string | null }) => {
+    const f = filter ?? { status };
+    const page = await getIssues({
+      ...(next ? { cursor: next } : {}),
+      ...(f.status ? { stateNames: [f.status] } : {}),
+    });
     if (next && page.nextCursor === next) throw new Error("Linear repeated a page. Refresh the ticket list to continue.");
     setIssues((previous) => [...new Map((next ? [...previous, ...page.issues] : page.issues).map((issue) => [issue.id, issue])).values()]);
     setCursor(page.nextCursor);
     return page.nextCursor;
-  }, [getIssues]);
+  }, [getIssues, status]);
+
+  const refreshCounts = useCallback(async () => {
+    try { setCounts(await getIssuesCount({})); } catch { /* counts are non-critical; the list still loads without them */ }
+  }, [getIssuesCount]);
 
   const loadAllIssues = async () => {
     let next = cursor;
@@ -133,7 +151,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   useEffect(() => {
     void run("Loading connection", async () => {
       const status = await getStatus({}); setConnection(status);
-      if (status.connected) await loadIssues();
+      if (status.connected) { await loadIssues(); void refreshCounts(); }
     });
     void loadOptions();
   }, [getStatus, loadIssues, loadOptions]);
@@ -147,6 +165,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   }, [getTemplate]);
 
   useEffect(() => {
+    void getSettings({}).then((value) => { setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed); }, () => {});
+  }, [getSettings]);
+
+  useEffect(() => {
     let cancelled = false;
     setDetail(null); setDetailError(null); setShowContext(false); setContextCopied(false);
     if (!selected) { setDetailLoading(false); return; }
@@ -157,6 +179,23 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
   }, [selected, getDetail, detailVersion]);
+
+  // Workspace-wide search: a short pause after typing, then Linear's own search over every
+  // team the key can see. Results render in their own section, de-duplicated against the
+  // loaded assignments; the local list keeps its fast client-side filtering.
+  useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2 || !connection?.connected) { setSearchResults([]); setSearchError(null); return; }
+    setSearching(true); setSearchError(null);
+    let cancelled = false;
+    const handle = setTimeout(() => {
+      void searchAll({ term })
+        .then((page) => { if (!cancelled) setSearchResults(page.issues); })
+        .catch((error) => { if (!cancelled) setSearchError(message(error)); })
+        .finally(() => { if (!cancelled) setSearching(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(handle); setSearching(false); };
+  }, [query, connection?.connected, searchAll, searchVersion]);
 
   const project = projects.find((item) => item.projectId === projectId);
   useEffect(() => {
@@ -190,9 +229,18 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const colors = t.colors;
 
   const visible = filterIssues(issues, query, status, dateField, dateDirection);
-  const statuses = statusCounts(issues);
-  // Keep a selected filter visible even when a refresh removes its last ticket.
-  if (status && !statuses.some(([name]) => name === status)) statuses.push([status, 0]);
+  const searchTerm = query.trim();
+  const loadedIds = useMemo(() => new Set(issues.map((issue) => issue.id)), [issues]);
+  const remoteVisible = searchResults.filter((issue) => !loadedIds.has(issue.id));
+  // Chips: server-side counts across all assignments once the count pass lands; until then
+  // (or if it failed) fall back to the distinct names in the loaded pages.
+  const statuses: [string, number][] = counts
+    ? [...Object.entries(counts.byName)].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8)
+    : statusCounts(issues);
+  // A chip is grouped by state name; use the first loaded ticket's workflow category for its accent.
+  const statusTypeFor = (name: string) => issues.find((issue) => issueStatus(issue) === name)?.statusType ?? "";
+  // Keep a selected filter visible even when its last ticket leaves the loaded pages.
+  if (status && !statuses.some(([name]) => name === status)) statuses.push([status, counts?.byName[status] ?? 0]);
   const ticketsLoading = busy === "Loading connection" || busy === "Refreshing tickets" || busy === "Loading tickets" || busy === "Loading all tickets";
   const current = detail?.issue ?? selected;
   const missingRequirement = !project ? "Choose a project"
@@ -200,14 +248,18 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       : !provider ? "Choose a model"
         : optionsLoading || branchesLoading ? "Loading choices…"
           : !detail ? "Loading ticket details…" : "";
+  const changeStatus = (name: string | null) => {
+    setStatus(name); setIssues([]); setCursor(null);
+    void run("Loading tickets", async () => { await loadIssues(undefined, { status: name }); });
+  };
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
   };
   const launch = () => void run("Starting agent", async () => {
     if (!selected || !canLaunch) return;
-    const fingerprint = JSON.stringify([selected.id, projectId, baseBranch, provider, modeId, thinkingOptionId, instructions]);
+    const fingerprint = JSON.stringify([selected.id, projectId, baseBranch, provider, modeId, thinkingOptionId, instructions, markInProgress]);
     if (launchRequest.current?.fingerprint !== fingerprint) launchRequest.current = { fingerprint, id: requestId() };
-    const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, requestId: launchRequest.current.id });
+    const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, markInProgress, requestId: launchRequest.current.id });
     setAgent(result);
   });
   const copyContext = () => {
@@ -224,13 +276,92 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     const chips = issue.labels.slice(0, layout.compact ? 1 : 2);
     const extra = issue.labels.length - chips.length;
     const places = [issue.project, issue.team].filter(Boolean).join(" · ");
-    if (!places && !chips.length && !extra) return null;
+    const due = issue.dueDate ? `Due ${formatIssueDate(issue.dueDate)}` : "";
+    const estimate = issue.estimate ? `${issue.estimate} pts` : "";
+    if (!places && !chips.length && !extra && !due && !estimate) return null;
     return <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
       {!!places && <Text numberOfLines={1} style={t.muted}>{places}</Text>}
       {chips.map((label) => <LabelChip key={label} label={label} t={t} />)}
       {extra > 0 && <Text style={t.muted}>+{extra}</Text>}
+      {due && <Text style={{ ...t.muted, color: colors.accent, fontSize: 11 }}>{due}</Text>}
+      {estimate && <Text style={{ ...t.muted, fontSize: 11 }}>{estimate}</Text>}
     </View>;
   };
+
+  const renderIssueRow = (issue: Issue, index: number) => {
+    const isHovered = hovered === issue.id;
+    const rightText = dateField === "priority" ? (hasPriority(issue.priority) ? formatPriority(issue.priority) : "—") : formatRelativeDate(issue[dateField] ?? "");
+    return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${rightText}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
+      onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
+      style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
+        {!layout.compact && <View style={{ width: 20, alignItems: "center" }}><PriorityMark priority={issue.priority} t={t} /></View>}
+        {!layout.compact && <Text style={{ color: colors.accent, width: 82, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>}
+        <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
+          {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <PriorityMark priority={issue.priority} t={t} />
+            <Text style={{ color: colors.accent, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>
+          </View>}
+          <Text numberOfLines={layout.compact ? 2 : 1} style={{ ...t.strong, fontSize: 15, lineHeight: 21 }}>{issue.title}</Text>
+          {metaLine(issue)}
+        </View>
+        {!layout.compact && <>
+          <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /></View>
+          <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{rightText}</Text>
+          <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
+        </>}
+        {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
+      </View>
+      {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <StatusBadge status={issueStatus(issue)} statusType={issue.statusType} t={t} /><Text style={t.muted}>{rightText}</Text>
+      </View>}
+    </Pressable>;
+  };
+
+  const settingsCard = <View style={{ ...t.card, gap: 14 }}>
+    <SectionHeading title="Settings" subtitle="Saved on this host and applied to the ticket list and new launches." icon="Settings" t={t} />
+    <FieldLabel title="Ticket status" icon="ListTodo" hint="when the agent starts" t={t} />
+    <Button title={markInProgress ? "Mark the ticket In Progress when the agent starts" : "Keep the ticket in its current state"} icon={markInProgress ? "Check" : "CircleDashed"} stretch chosen={markInProgress}
+      onPress={() => void run("Saving setting", async () => {
+        const next = !markInProgress;
+        setMarkInProgress(next);
+        setMarkInProgress((await saveSettings({ markInProgress: next })).markInProgress);
+      })} />
+    <Text style={t.muted}>Off keeps the plugin read-only. The ticket only moves when its team has an In Progress state and it is not already in one.</Text>
+    <Divider t={t} spaced />
+    <FieldLabel title="Tickets shown" icon="Eye" hint="in the list and the status counts" t={t} />
+    <Button title={showClosed ? "Show completed, canceled and duplicated tickets" : "Hide completed, canceled and duplicated tickets"} icon={showClosed ? "Check" : "CircleDashed"} stretch chosen={showClosed}
+      onPress={() => void run("Updating ticket list", async () => {
+        const next = !showClosed;
+        setShowClosed(next);
+        setShowClosed((await saveSettings({ showClosed: next })).showClosed);
+        setStatus(null); setIssues([]); setCursor(null);
+        await loadIssues(undefined, { status: null });
+        void refreshCounts();
+      })} />
+    <Text style={t.muted}>Off keeps the list focused on open work; finished, canceled and duplicated tickets stay hidden from the list and the counts.</Text>
+    <Divider t={t} spaced />
+    <FieldLabel title="Default prompt" icon="PenLine" hint="the system prompt used when you start an agent" t={t} />
+    {templateOpen ? <View style={{ gap: 8 }}>
+      <TextInput accessibilityLabel="Default prompt template" editable={!busy} multiline maxLength={8000} value={templateText} onChangeText={setTemplateText}
+        placeholder="How the agent should work on this ticket…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.mono, minHeight: 120, textAlignVertical: "top" }} />
+      <Text style={t.muted}>Placeholders: {"{{ticket}}"} = ticket ID and title · {"{{instructions}}"} = the extra direction you type at launch · {"{{context}}"} = the ticket snapshot (required).</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <Button title="Save default prompt" icon="Check" onPress={() => void run("Saving default prompt", async () => {
+          const result = await saveTemplate({ template: templateText });
+          setTemplateSaved(result.template); setTemplateText(result.template ?? result.builtin); setTemplateOpen(false);
+        })} />
+        <Button title="Reset to built-in" icon="RotateCcw" onPress={() => void run("Resetting default prompt", async () => {
+          const result = await saveTemplate({ template: "" });
+          setTemplateSaved(null); setTemplateText(result.builtin); setTemplateOpen(false);
+        })} />
+      </View>
+    </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+      <Button title="Edit default prompt" icon="PenLine" size="sm" disabled={Boolean(busy)} onPress={() => { setTemplateText(templateSaved ?? builtinTemplate); setTemplateOpen(true); }} />
+      <Text style={t.muted}>{templateSaved ? "A custom template is used for new agents." : "The built-in default is used for new agents."}</Text>
+    </View>}
+    <Button title="Back to tickets" icon="ArrowLeft" size="sm" onPress={() => setView("list")} />
+  </View>;
 
   return <SurfaceProvider t={t} busy={Boolean(busy)}><ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 28, gap: layout.compact ? 18 : 22, width: "100%", maxWidth: 1280, alignSelf: "center" }}>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 16, paddingBottom: 20, borderBottomWidth: 1, borderBottomColor: colors.border }}>
@@ -248,7 +379,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         {connectionPill}
         {connection?.connected && <>
           <Button title="Connection" icon="Plug" iconOnly size="md" chosen={manageConnection} onPress={() => setManageConnection(!manageConnection)} />
-          <Button title="Refresh tickets" icon="RefreshCw" iconOnly onPress={() => void run("Refreshing tickets", async () => { await loadIssues(); })} />
+          <Button title="Settings" icon="Settings" iconOnly size="md" chosen={view === "settings"} onPress={() => setView(view === "settings" ? "list" : "settings")} />
+          <Button title="Refresh tickets" icon="RefreshCw" iconOnly onPress={() => void run("Refreshing tickets", async () => { await loadIssues(); void refreshCounts(); })} />
         </>}
       </View>
     </View>
@@ -261,7 +393,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         {[
           "Create a personal API key in Linear → Settings → Security & access.",
           "Paste it below, or set LINEAR_API_KEY in the daemon environment.",
-          "A read-only key is enough — the plugin never writes to Linear.",
+          "A read-only key covers browsing; write permission is only needed for the optional \"mark the ticket In Progress\" step.",
         ].map((step, index) => <View key={step} style={{ flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
           <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: colors.surface2, alignItems: "center", justifyContent: "center" }}>
             <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>{index + 1}</Text>
@@ -274,11 +406,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       <TextInput accessibilityLabel="Linear API key" secureTextEntry autoCapitalize="none" autoCorrect={false} value={key} onChangeText={setKey} placeholder="lin_api_…" placeholderTextColor={colors.foregroundMuted} style={t.input} />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Button title="Connect Linear" icon="Plug" primary disabled={!key.trim()} onPress={() => void run("Connecting Linear", async () => {
-          setConnection(await connect({ apiKey: key.trim() })); setKey(""); await loadIssues();
+          setConnection(await connect({ apiKey: key.trim() })); setKey(""); await loadIssues(); void refreshCounts();
         })} />
         <Button title="Retry saved connection" icon="RefreshCw" onPress={() => void run("Loading connection", async () => {
           const status = await getStatus({}); setConnection(status);
-          if (status.connected) await loadIssues();
+          if (status.connected) { await loadIssues(); void refreshCounts(); }
         })} />
       </View>
     </View> : <>
@@ -288,11 +420,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <Text style={t.muted}>{connection.source === "environment" ? "Key supplied by the daemon environment (LINEAR_API_KEY)." : "Key saved on this Paseo host."}</Text>
         </View>
         {connection.source !== "environment" && <Button title="Disconnect" icon="Unplug" tone="danger" onPress={() => void run("Disconnecting", async () => {
-          setConnection(await disconnect({})); setIssues([]); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
+          setConnection(await disconnect({})); setIssues([]); setCounts(null); setSearchResults([]); setSearchError(null); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
         })} />}
       </View>}
 
-      {selected && current ? <>
+      {view === "settings" ? settingsCard : selected && current ? <>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           <Button title="Assigned tickets" icon="ArrowLeft" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
           {/^https:\/\/linear\.app\//.test(selected.url) && <Button title="Open in Linear" icon="ExternalLink" onPress={() => void run("Opening Linear", async () => { await openExternalUrl(selected.url, { platform: layout.platform, linking: Linking }); })} />}
@@ -307,7 +439,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
                 </View>
                 <PriorityMark priority={current.priority} t={t} showLabel />
               </View>
-              <StatusBadge status={current.status} t={t} />
+              <StatusBadge status={current.status} statusType={current.statusType} t={t} />
             </View>
             <Text style={t.cardTitle}>{current.title}</Text>
 
@@ -317,7 +449,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               <MetaItem icon="Tag" label="Labels" chips={current.labels} t={t} />
               <MetaItem icon="Calendar" label="Created" value={formatIssueDate(current.createdAt)} t={t} />
               <MetaItem icon="Clock" label="Updated" value={formatRelativeDate(current.updatedAt)} t={t} />
+              {current.dueDate && <MetaItem icon="CalendarClock" label="Due" value={formatIssueDate(current.dueDate)} t={t} />}
+              {current.estimate ? <MetaItem icon="Hash" label="Estimate" value={`${current.estimate} pts`} t={t} /> : null}
             </View>
+
+            {detail && statusChangesText(detail.context) && <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Icon name="History" size={13} color={colors.foregroundMuted} />
+              <Text style={{ ...t.muted, fontSize: 12 }}>Status history: {statusChangesText(detail.context)}</Text>
+            </View>}
 
             <Divider t={t} spaced />
             <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -397,25 +536,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               placeholder="Anything the agent should know before it starts…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.input, minHeight: 84, textAlignVertical: "top" }} />
 
             <Divider t={t} spaced />
-            <FieldLabel title="Default prompt" icon="PenLine" hint="used when you start an agent" t={t} />
-            {templateOpen ? <View style={{ gap: 8 }}>
-              <TextInput accessibilityLabel="Default prompt template" editable={!busy} multiline maxLength={8000} value={templateText} onChangeText={setTemplateText}
-                placeholder="How the agent should work on this ticket…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.mono, minHeight: 120, textAlignVertical: "top" }} />
-              <Text style={t.muted}>Placeholders: {"{{ticket}}"} = ticket ID and title · {"{{instructions}}"} = the extra direction above · {"{{context}}"} = the ticket snapshot (required).</Text>
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                <Button title="Save default prompt" icon="Check" onPress={() => void run("Saving default prompt", async () => {
-                  const result = await saveTemplate({ template: templateText });
-                  setTemplateSaved(result.template); setTemplateText(result.template ?? result.builtin); setTemplateOpen(false);
-                })} />
-                <Button title="Reset to built-in" icon="RotateCcw" onPress={() => void run("Resetting default prompt", async () => {
-                  const result = await saveTemplate({ template: "" });
-                  setTemplateSaved(null); setTemplateText(result.builtin); setTemplateOpen(false);
-                })} />
-              </View>
-            </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-              <Button title="Edit default prompt" icon="PenLine" size="sm" disabled={Boolean(busy)} onPress={() => { setTemplateText(templateSaved ?? builtinTemplate); setTemplateOpen(true); }} />
-              <Text style={t.muted}>{templateSaved ? "A custom template is used for new agents." : "The built-in default is used for new agents."}</Text>
-            </View>}
+            <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              <Button title="Settings" icon="Settings" size="sm" disabled={Boolean(busy)} onPress={() => setView("settings")} />
+              <Text style={t.muted}>{markInProgress ? "Ticket will be marked In Progress at launch." : "Ticket stays in its current state at launch."} {templateSaved ? "Custom default prompt active." : "Built-in default prompt."}</Text>
+            </View>
 
             <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 16, marginTop: 4, gap: 12 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
@@ -430,33 +554,33 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         <View style={{ ...t.card, gap: 16 }}>
           <View style={{ ...t.input, paddingVertical: 0, flexDirection: "row", alignItems: "center", gap: 10 }}>
             <Icon name="Search" size={17} color={colors.foregroundMuted} />
-            <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Search by title, ID, project, team or label…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 12, fontSize: 14, flex: 1, minWidth: 0 }} />
+            <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Search loaded tickets — and all of Linear…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 12, fontSize: 14, flex: 1, minWidth: 0 }} />
             {!!query && <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => setQuery("")}><Icon name="X" size={15} color={colors.foregroundMuted} /></Pressable>}
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <FieldLabel title="Status" icon="ListFilter" t={t} />
-            <Button size="sm" title={`All · ${issues.length}`} chosen={status === null} onPress={() => setStatus(null)} />
-            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, t) }} />}
-              onPress={() => setStatus(status === name ? null : name)} />)}
+            <Button size="sm" title={`All · ${counts ? (counts.complete ? counts.total : `${counts.total}+`) : issues.length}`} chosen={status === null} onPress={() => changeStatus(null)} />
+            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, statusTypeFor(name), t) }} />}
+              onPress={() => changeStatus(status === name ? null : name)} />)}
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
             <FieldLabel title="Sort" icon="ArrowDownUp" t={t} />
             <Segmented t={t} label="Sort field" value={dateField} onChange={(value) => setDateField(value)}
-              options={[{ value: "updatedAt" as DateField, label: "Updated", icon: "Clock" }, { value: "createdAt" as DateField, label: "Created", icon: "Calendar" }]} />
+              options={[{ value: "updatedAt" as SortField, label: "Updated", icon: "Clock" }, { value: "createdAt" as SortField, label: "Created", icon: "Calendar" }, { value: "dueDate" as SortField, label: "Due", icon: "CalendarClock" }, { value: "priority" as SortField, label: "Priority", icon: "Flag" }]} />
             <Segmented t={t} label="Sort direction" value={dateDirection} onChange={(value) => setDateDirection(value)}
-              options={[{ value: "newest" as DateDirection, label: "Newest", icon: "ArrowDown" }, { value: "oldest" as DateDirection, label: "Oldest", icon: "ArrowUp" }]} />
-            {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { setStatus(null); setQuery(""); }} />}
+              options={[{ value: "newest" as SortDirection, label: dateField === "dueDate" ? "Latest" : dateField === "priority" ? "Highest" : "Newest", icon: "ArrowDown" }, { value: "oldest" as SortDirection, label: dateField === "dueDate" ? "Soonest" : dateField === "priority" ? "Lowest" : "Oldest", icon: "ArrowUp" }]} />
+            {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} />}
           </View>
         </View>
 
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
-          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
-          <Text style={t.muted}>Sorted by {dateField === "updatedAt" ? "last updated" : "date created"} · {dateDirection === "newest" ? "newest first" : "oldest first"}</Text>
+          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{!showClosed ? " (open)" : ""}{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
+          <Text style={t.muted}>Sorted by {dateField === "priority" ? (dateDirection === "newest" ? "priority · highest first" : "priority · lowest first") : dateField === "dueDate" ? (dateDirection === "newest" ? "due date · latest first" : "due date · soonest first") : dateField === "updatedAt" ? (dateDirection === "newest" ? "last updated · newest first" : "last updated · oldest first") : dateDirection === "newest" ? "date created · newest first" : "date created · oldest first"}</Text>
         </View>
 
         {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
-          description={issues.length ? "Try another status or a different search term." : "Assigned tickets will appear here as soon as Linear has them."}
-          action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { setStatus(null); setQuery(""); }} /> : undefined} />}
+          description={issues.length ? "Try another status or a different search term." : showClosed ? "Assigned tickets will appear here as soon as Linear has them." : "No open tickets are assigned to you right now. Enable the closed-states setting to also see finished work."}
+          action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} /> : undefined} />}
 
         {(!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
           {!layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 11, backgroundColor: colors.surface2 }}>
@@ -464,7 +588,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <Text style={{ ...t.eyebrow, width: 82 }}>Issue</Text>
             <Text style={{ ...t.eyebrow, flex: 1 }}>Title</Text>
             <Text style={{ ...t.eyebrow, width: 130 }}>Status</Text>
-            <Text style={{ ...t.eyebrow, width: 88, textAlign: "right" }}>{dateField === "updatedAt" ? "Updated" : "Created"}</Text>
+            <Text style={{ ...t.eyebrow, width: 88, textAlign: "right" }}>{dateField === "priority" ? "Priority" : dateField === "dueDate" ? "Due date" : dateField === "updatedAt" ? "Updated" : "Created"}</Text>
             <View style={{ width: 14 }} />
           </View>}
           {ticketsLoading && !visible.length && [0, 1, 2, 3].map((row) => <View key={row} style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 18, borderTopWidth: row ? 1 : 0, borderTopColor: colors.surface2 }}>
@@ -474,42 +598,26 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <View style={{ flex: 1 }} />
             <Skeleton t={t} width={86} height={18} radius={9} />
           </View>)}
-          {visible.map((issue, index) => {
-            const isHovered = hovered === issue.id;
-            return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${formatRelativeDate(issue[dateField])}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
-              onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
-              style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
-                {!layout.compact && <View style={{ width: 20, alignItems: "center" }}><PriorityMark priority={issue.priority} t={t} /></View>}
-                {!layout.compact && <Text style={{ color: colors.accent, width: 82, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>}
-                <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
-                  {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <PriorityMark priority={issue.priority} t={t} />
-                    <Text style={{ color: colors.accent, fontFamily: "monospace", fontSize: 12 }}>{issue.identifier}</Text>
-                  </View>}
-                  <Text numberOfLines={layout.compact ? 2 : 1} style={{ ...t.strong, fontSize: 15, lineHeight: 21 }}>{issue.title}</Text>
-                  {metaLine(issue)}
-                </View>
-                {!layout.compact && <>
-                  <View style={{ width: 130 }}><StatusBadge status={issueStatus(issue)} t={t} /></View>
-                  <Text style={{ ...t.muted, width: 88, textAlign: "right" }}>{formatRelativeDate(issue[dateField])}</Text>
-                  <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />
-                </>}
-                {layout.compact && <Icon name="ChevronRight" size={15} color={isHovered ? colors.accent : colors.foregroundMuted} />}
-              </View>
-              {layout.compact && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <StatusBadge status={issueStatus(issue)} t={t} /><Text style={t.muted}>{formatRelativeDate(issue[dateField])}</Text>
-              </View>}
-            </Pressable>;
-          })}
+          {visible.map((issue, index) => renderIssueRow(issue, index))}
         </View>}
 
         {cursor && <View style={{ ...t.card, alignItems: "center", gap: 10 }}>
-          <Text style={{ ...t.muted, textAlign: "center" }}>Filters and sorting apply to loaded tickets. Load all to include every assignment.</Text>
+          <Text style={{ ...t.muted, textAlign: "center" }}>Search and sorting apply to loaded tickets. Load all to include every assignment.</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
             <Button title="Load more" icon="ChevronDown" onPress={() => void run("Loading tickets", async () => { await loadIssues(cursor); })} />
             <Button title="Load all tickets" icon="Layers" onPress={() => void run("Loading all tickets", loadAllIssues)} />
           </View>
+        </View>}
+
+        {searchTerm.length >= 2 && (searching || searchResults.length > 0 || searchError) && <View style={{ ...t.card, gap: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+            <SectionHeading title="Across Linear" subtitle={`Workspace-wide matches for “${searchTerm}”`} icon="Search" t={t} />
+            {searching && <ActivityIndicator color={colors.accent} size="small" />}
+          </View>
+          {searchError && <Callout t={t} tone="danger" message={searchError} action={<Button title="Retry" icon="RefreshCw" size="sm" onPress={() => setSearchVersion((value) => value + 1)} />} />}
+          {remoteVisible.length ? <View style={{ backgroundColor: colors.surface1, borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+            {remoteVisible.map((issue, index) => renderIssueRow(issue, index))}
+          </View> : !searching && !searchError && <Text style={t.muted}>No other tickets in this workspace match “{searchTerm}”.</Text>}
         </View>}
       </>}
     </>}

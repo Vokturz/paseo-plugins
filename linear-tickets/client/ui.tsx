@@ -102,8 +102,8 @@ const STATUS_TONES: Record<StatusTone, { icon: string; color: (t: Tokens) => str
   neutral: { icon: "Circle", color: (t) => t.colors.foregroundMuted, dim: true },
 };
 
-export function StatusBadge({ status, t, compact = false }: { status: string; t: Tokens; compact?: boolean }) {
-  const tone = STATUS_TONES[statusTone(status)];
+export function StatusBadge({ status, statusType, t, compact = false }: { status: string; statusType?: string; t: Tokens; compact?: boolean }) {
+  const tone = STATUS_TONES[statusTone(status, statusType ?? "")];
   const color = tone.color(t);
   if (compact) return <View style={{ flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "100%" }}>
     <Icon name={tone.icon} size={12} color={color} />
@@ -131,8 +131,8 @@ export function Segmented<Value extends string>({ label, options, value, onChang
   </View>;
 }
 
-export function statusAccent(status: string, t: Tokens) {
-  return STATUS_TONES[statusTone(status)].color(t);
+export function statusAccent(status: string, statusType: string, t: Tokens) {
+  return STATUS_TONES[statusTone(status, statusType)].color(t);
 }
 
 const PRIORITY_TONES: Record<PriorityTone, { icon: string; color: (t: Tokens) => string }> = {

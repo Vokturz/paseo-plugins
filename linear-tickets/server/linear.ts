@@ -1,5 +1,5 @@
-import type { TicketDetail } from "../shared/contracts";
-import { buildContext, normalizeIssue, issuePage, connection, record } from "./context";
+import type { Issue, TicketDetail } from "../shared/contracts";
+import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans, label } from "./context";
 import { Credentials } from "./credentials";
 
 const endpoint = "https://api.linear.app/graphql";
@@ -58,16 +58,18 @@ export const VIEWER_QUERY = `query viewerCheck {
   viewer { id }
 }`;
 
-export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String) {
-  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: { assignee: { isMe: { eq: true } } }) {
+export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String, $filter: IssueFilter) {
+  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: $filter) {
     nodes {
       id
       identifier
       title
       description
       url
-      state { name }
+      state { name type }
       priorityLabel
+      dueDate
+      estimate
       project { name identifier url }
       team { name key }
       labels(first: 50) { nodes { id name } }
@@ -78,6 +80,51 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String)
   }
 }`;
 
+const COUNT_ISSUES_QUERY = `query countIssues($first: Int!, $after: String, $filter: IssueFilter) {
+  issues(first: $first, after: $after, includeArchived: false, orderBy: updatedAt, filter: $filter) {
+    nodes { state { name type } }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+// Same field set as the list query so results normalize identically. Linear's search
+// covers every team the key can see, not just the user's assignments.
+export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: Int!, $after: String) {
+  searchIssues(term: $term, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      url
+      state { name type }
+      priorityLabel
+      dueDate
+      estimate
+      project { name identifier url }
+      team { name key }
+      labels(first: 50) { nodes { id name } }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+// The list filter is built in TypeScript so it stays deterministic (deduped, sorted)
+// across caching, tests and request logging. An explicit state-name selection always
+// wins over the default scope: picking the Done chip means seeing Done tickets. When
+// closed states are not shown, completed, canceled and duplicated work is hidden.
+export function listIssueFilter(stateNames?: string[], showClosed?: boolean): Record<string, unknown> {
+  const filter: Record<string, unknown> = { assignee: { isMe: { eq: true } } };
+  const state: Record<string, unknown> = {};
+  const names = [...new Set((stateNames ?? []).map((name) => name.trim()).filter(Boolean))].sort();
+  if (names.length) state.name = { in: names };
+  else if (showClosed !== true) state.type = { nin: ["completed", "canceled", "duplicate"] };
+  if (Object.keys(state).length) filter.state = state;
+  return filter;
+}
+
 export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
   issue(id: $id) {
     id
@@ -85,8 +132,11 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     title
     description
     url
-    state { name }
+    state { name type }
+    branchName
     priorityLabel
+    dueDate
+    estimate
     project { id name identifier url }
     team { id name key }
     labels(first: 50) { nodes { id name } }
@@ -94,11 +144,39 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     updatedAt
     parent { id identifier title url }
     children(first: 50) { nodes { id identifier title url } }
-    relations(first: 50) { nodes { type issue { id identifier title } relatedIssue { id identifier title } } }
+    relations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
+    inverseRelations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
     attachments(first: 50) { nodes { id title url } }
     documents(first: 50) { nodes { id title url } }
+    stateHistory(first: 20) { nodes { state { name type } startedAt endedAt } }
   }
 }`;
+
+// A team's workflow states, used to resolve where "in progress" points at.
+export type TeamState = { id: string; name: string; type: string; position: number };
+
+export const TEAM_STATES_QUERY = `query teamStates($teamId: String!) {
+  team(id: $teamId) { states(first: 50) { nodes { id name type position } } }
+}`;
+
+// The plugin's only write: move one ticket into a team's "started" state.
+export const UPDATE_ISSUE_STATE_QUERY = `mutation issueUpdateState($id: String!, $stateId: String!) {
+  issueUpdate(id: $id, input: { stateId: $stateId }) { success issue { id state { name type } } }
+}`;
+
+// Resolution order matters: a team can have several "started" states ("In Review" and
+// "In Progress" in this workspace). Prefer an explicit choice, then a state named
+// "in progress", then the lowest-position started state. Never pick any other type.
+export function resolveStartedState(states: TeamState[], preferredId?: string): TeamState | null {
+  if (preferredId) {
+    const chosen = states.find((state) => state.id === preferredId);
+    if (chosen) return chosen;
+  }
+  const started = states
+    .filter((state) => state.type.trim().toLowerCase() === "started")
+    .sort((a, b) => a.position - b.position);
+  return started.find((state) => state.name.trim().toLowerCase() === "in progress") ?? started[0] ?? null;
+}
 
 export const COMMENT_QUERY = `query issueComments($id: String!, $first: Int!, $after: String) {
   issue(id: $id) {
@@ -138,9 +216,44 @@ export class LinearService {
     return work(key);
   }
 
-  async issues(cursor?: string) {
+  async issues(cursor?: string, stateNames?: string[], showClosed?: boolean) {
     return this.withKey(async (key) =>
-      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null })).issues));
+      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, showClosed) })).issues));
+  }
+
+  // Linear's GraphQL exposes no aggregation, so chip counts come from a bounded pass over
+  // every assignment (25 pages x 50). `complete` is false when the cap was hit; the client
+  // then shows counts as a lower bound instead of pretending they are exact.
+  async countIssues(showClosed?: boolean): Promise<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean }> {
+    return this.withKey(async (key) => {
+      const byName: Record<string, number> = {};
+      const byType: Record<string, number> = {};
+      let total = 0;
+      let after: string | null = null;
+      let complete = false;
+      for (let page = 0; page < 25; page++) {
+        const data = record(await this.post(key, COUNT_ISSUES_QUERY, { first: 50, after, filter: listIssueFilter(undefined, showClosed) }));
+        const pageData = record(data.issues);
+        for (const node of Array.isArray(pageData.nodes) ? (pageData.nodes as unknown[]) : []) {
+          if (!node || typeof node !== "object") continue;
+          const state = (node as { state?: { name?: unknown; type?: unknown } }).state;
+          const name = state && typeof state.name === "string" && state.name ? state.name : "No status";
+          const type = state && typeof state.type === "string" && state.type ? state.type : "unknown";
+          byName[name] = (byName[name] ?? 0) + 1;
+          byType[type] = (byType[type] ?? 0) + 1;
+          total++;
+        }
+        const info = pageData.pageInfo && typeof pageData.pageInfo === "object" ? pageData.pageInfo as { hasNextPage?: unknown; endCursor?: unknown } : {};
+        after = info.hasNextPage === true && typeof info.endCursor === "string" && info.endCursor ? info.endCursor : null;
+        if (!after) { complete = true; break; } // the loop exits at the cap with more pages still available
+      }
+      return { total, byName, byType, complete };
+    });
+  }
+
+  async searchIssues(term: string, cursor?: string) {
+    return this.withKey(async (key) =>
+      issuePage(record(await this.post(key, SEARCH_ISSUES_QUERY, { term: term.trim(), first: 50, after: cursor ?? null })).searchIssues));
   }
 
   async detail(id: string): Promise<TicketDetail> {
@@ -151,6 +264,7 @@ export class LinearService {
       }
       const issueData = record(data.issue);
       const issue = normalizeIssue(issueData);
+      const teamId = label(record(issueData.team ?? {}).id) || null;
       const warnings: string[] = [];
       let comments: unknown[] = [];
       try {
@@ -165,7 +279,59 @@ export class LinearService {
         comments = [];
         warnings.push("Comments could not be loaded; only the ticket details are included.");
       }
-      return { issue, warnings, context: buildContext(issueData, comments) };
+      return { issue, teamId, warnings, context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
     });
+  }
+
+  // The team's workflow states, cached for the plugin's lifetime; they rarely change.
+  private readonly teamStatesCache = new Map<string, TeamState[]>();
+
+  private async teamStates(teamId: string): Promise<TeamState[]> {
+    const cached = this.teamStatesCache.get(teamId);
+    if (cached) return cached;
+    const data = record(await this.withKey((key) => this.post(key, TEAM_STATES_QUERY, { teamId })));
+    const team = data.team && typeof data.team === "object" ? record(data.team) : {};
+    const statesPage = team.states && typeof team.states === "object" ? record(team.states) : { nodes: [] };
+    const states = connection(statesPage).nodes
+      .map((node) => record(node))
+      .map((node) => ({
+        id: label(node.id),
+        name: label(node.name),
+        type: label(node.type),
+        position: typeof node.position === "number" && Number.isFinite(node.position) ? node.position : Number.MAX_SAFE_INTEGER,
+      }))
+      .filter((state) => state.id && state.name);
+    this.teamStatesCache.set(teamId, states);
+    return states;
+  }
+
+  // The plugin's only write. Best-effort by design: callers surface `note` as a warning,
+  // and a failure here must never turn into a launch failure.
+  async markInProgress(issue: Issue, teamId: string | null): Promise<{ changed: boolean; note?: string }> {
+    // Already in the team's "started" state (e.g. "In Progress"): leave it. A repeat
+    // write would only add audit noise to a ticket the agent is about to work on.
+    if (issue.statusType.trim().toLowerCase() === "started") return { changed: false };
+    if (!teamId) return { changed: false, note: "The ticket has no team, so it could not be marked in progress." };
+    let states: TeamState[];
+    try {
+      states = await this.teamStates(teamId);
+    } catch (error) {
+      return { changed: false, note: `Could not load the ticket team's states: ${error instanceof Error ? error.message : "unknown error"}` };
+    }
+    const target = resolveStartedState(states);
+    if (!target) {
+      return { changed: false, note: `The ticket's team has no \"In Progress\" state, so it was left in ${issue.status || "its current state"}.` };
+    }
+    let data: Record<string, unknown>;
+    try {
+      data = record(await this.withKey((key) => this.post(key, UPDATE_ISSUE_STATE_QUERY, { id: issue.id, stateId: target.id })));
+    } catch (error) {
+      return { changed: false, note: `Linear rejected the change to ${target.name}: ${error instanceof Error ? error.message : "unknown error"}` };
+    }
+    const result = data.issueUpdate && typeof data.issueUpdate === "object" ? record(data.issueUpdate) : {};
+    if (result.success === false) {
+      return { changed: false, note: `Linear reported that the change to ${target.name} was not applied; the ticket is unchanged.` };
+    }
+    return { changed: true };
   }
 }

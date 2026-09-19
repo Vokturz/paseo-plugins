@@ -7,16 +7,35 @@ import { findProject, readBranches } from "./projects";
 
 type Start = RpcInput<typeof launchAgentRpc>;
 type Result = { agentId: string; warnings: string[] };
-type Options = { promptTemplate?: string };
+type Options = { promptTemplate?: string; markInProgress?: boolean };
+
+// Linear computes the branch name with the workspace's branch-format setting, so it is
+// the name users expect — but a stored value is not guaranteed to be a safe git ref.
+const UNSAFE_BRANCH_CHARS = "~^:?*[]\\";
+export function safeBranchName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim();
+  if (!name || name.length > 250 || /\s/.test(name)) return null;
+  if (name.includes("..") || name.includes("@{") || name.endsWith(".lock")) return null;
+  if (name.startsWith("/") || name.startsWith(".") || name.endsWith("/") || name.endsWith(".")) return null;
+  if ([...name].some((char) => char.charCodeAt(0) < 0x20 || UNSAFE_BRANCH_CHARS.includes(char))) return null;
+  return name;
+}
+
+// A failed worktree create that names an existing branch is the only workspace failure
+// worth retrying: git reports it as "a branch named '<name>' already exists".
+function isBranchCollision(error: unknown): boolean {
+  return error instanceof Error && /already exists/i.test(error.message);
+}
 
 export class Launcher {
   private readonly requests = new Map<string, { fingerprint: string; result: Promise<Result> }>();
   private readonly active = new Map<string, Promise<Result>>();
 
-  constructor(private readonly linear: Pick<LinearService, "detail">, private readonly branches = readBranches) {}
+  constructor(private readonly linear: Pick<LinearService, "detail" | "markInProgress">, private readonly branches = readBranches) {}
 
   start(input: Start, paseo: PaseoApi, options: Options = {}): Promise<Result> {
-    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? ""]);
+    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? "", options.markInProgress ?? false]);
     const prior = this.requests.get(input.requestId);
     if (prior) {
       if (prior.fingerprint !== fingerprint) return Promise.reject(new Error("This launch request has already been used. Reopen the ticket to start another agent."));
@@ -58,15 +77,30 @@ export class Launcher {
     onCreate();
     const title = `${detail.issue.identifier}: ${detail.issue.title}`.slice(0, 60);
     const slug = detail.issue.identifier.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 40) || "ticket";
-    const workspace = await paseo.workspaces.create({
-      title,
-      requestId: `${input.requestId}-workspace`,
-      source: project.projectKind === "git"
-        ? { kind: "worktree", projectId: project.projectId, cwd: project.projectRootPath, action: "branch-off", baseBranch: input.baseBranch, branchName: `${slug}-${input.requestId.slice(0, 8)}` }
-        : { kind: "directory", projectId: project.projectId, path: project.projectRootPath },
-    }).catch(() => {
-      throw new Error("Workspace creation could not be confirmed. Check this project's workspaces before reopening the ticket to try again.");
-    });
+    // Prefer Linear's canonical branch name. Unlike the synthesized fallback it carries no
+    // request suffix, so a second launch of the same ticket would collide: retry exactly
+    // once with the short request-id suffix before surfacing any other failure.
+    const canonical = safeBranchName(detail.issue.branchName);
+    const fallback = `${slug}-${input.requestId.slice(0, 8)}`;
+    const branchNames = project.projectKind === "git" ? (canonical ? [canonical, `${canonical}-${input.requestId.slice(0, 8)}`] : [fallback]) : [fallback];
+    let workspace;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        workspace = await paseo.workspaces.create({
+          title,
+          // A distinct request id keeps the suffixed retry from being deduplicated as the failed create.
+          requestId: `${input.requestId}-workspace${attempt ? "-retry" : ""}`,
+          source: project.projectKind === "git"
+            ? { kind: "worktree", projectId: project.projectId, cwd: project.projectRootPath, action: "branch-off", baseBranch: input.baseBranch, branchName: branchNames[attempt] }
+            : { kind: "directory", projectId: project.projectId, path: project.projectRootPath },
+        });
+        break;
+      } catch (error) {
+        if (project.projectKind !== "git" || attempt >= branchNames.length - 1 || !isBranchCollision(error)) {
+          throw new Error("Workspace creation could not be confirmed. Check this project's workspaces before reopening the ticket to try again.");
+        }
+      }
+    }
     const agent = await workspace.agents.create({
       config: { provider: input.provider, modeId: input.modeId, thinkingOptionId: input.thinkingOptionId },
       title,
@@ -77,6 +111,18 @@ export class Launcher {
     }).catch(() => {
       throw new Error("Agent creation could not be confirmed. Check the workspace's agents before reopening this ticket to try again.");
     });
-    return { agentId: agent.id, warnings: detail.warnings };
+    const warnings = [...detail.warnings];
+    if (options.markInProgress) {
+      // Best-effort: the agent already exists, so a failed transition degrades to a
+      // warning instead of failing the launch. The requestId/fingerprint dedupe above
+      // also means a retried identical launch does not re-run the mutation.
+      try {
+        const outcome = await this.linear.markInProgress(detail.issue, detail.teamId);
+        if (!outcome.changed && outcome.note) warnings.push(outcome.note);
+      } catch (error) {
+        warnings.push(`Could not mark the ticket in progress: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+    }
+    return { agentId: agent.id, warnings };
   }
 }

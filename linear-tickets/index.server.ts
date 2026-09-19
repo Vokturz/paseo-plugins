@@ -1,5 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { branchesRpc, connectRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, setDefaultPromptRpc, statusRpc } from "./shared/contracts";
+import { branchesRpc, connectRpc, countIssuesRpc, getSettingsRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc } from "./shared/contracts";
 import { projectBranches } from "./server/projects";
 import { LinearService } from "./server/linear";
 import { Launcher } from "./server/launch";
@@ -13,14 +13,18 @@ export default function contribute(server: PluginServerContext) {
   server.handle(statusRpc, () => linear.status());
   server.handle(connectRpc, ({ apiKey }) => linear.authenticate(apiKey));
   server.handle(disconnectRpc, () => linear.disconnect());
-  server.handle(listIssuesRpc, ({ cursor }) => linear.issues(cursor));
+  server.handle(listIssuesRpc, async ({ cursor, stateNames }) => linear.issues(cursor, stateNames, (await settings.read()).showClosed));
+  server.handle(countIssuesRpc, async () => linear.countIssues((await settings.read()).showClosed));
+  server.handle(searchIssuesRpc, ({ term, cursor }) => linear.searchIssues(term, cursor));
   server.handle(issueContextRpc, ({ id }) => linear.detail(id));
   server.handle(branchesRpc, ({ projectId }, { paseo }) => projectBranches(paseo, projectId));
   server.handle(getDefaultPromptRpc, async () => ({ template: (await settings.read()).template, builtin: DEFAULT_PROMPT_TEMPLATE }));
   server.handle(setDefaultPromptRpc, ({ template }) => settings.save(template).then((saved) => ({ ...saved, builtin: DEFAULT_PROMPT_TEMPLATE })));
+  server.handle(getSettingsRpc, async () => ({ ...(await settings.read()), builtin: DEFAULT_PROMPT_TEMPLATE }));
+  server.handle(setSettingsRpc, async (input) => ({ ...(await settings.patch(input)), builtin: DEFAULT_PROMPT_TEMPLATE }));
   server.handle(launchAgentRpc, async (input, { paseo }) => {
     const { template } = await settings.read();
-    return launcher.start(input, paseo, { promptTemplate: template ?? undefined });
+    return launcher.start(input, paseo, { promptTemplate: template ?? undefined, markInProgress: input.markInProgress });
   });
   return () => {};
 }

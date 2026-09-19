@@ -18,7 +18,11 @@ export const issueSchema = z.object({
   title: z.string(),
   url: z.string(),
   status: z.string(),
+  statusType: z.string().default(""),
+  branchName: z.string().default(""),
   priority: z.string(),
+  dueDate: z.string().nullable().default(null),
+  estimate: z.number().nullable().default(null),
   project: z.string(),
   description: z.string(),
   team: z.string(),
@@ -28,7 +32,7 @@ export const issueSchema = z.object({
 });
 export type Issue = z.infer<typeof issueSchema>;
 
-export const detailSchema = z.object({ issue: issueSchema, context: z.string(), warnings: z.array(z.string()) });
+export const detailSchema = z.object({ issue: issueSchema, teamId: z.string().nullable().default(null), context: z.string(), warnings: z.array(z.string()) });
 export type TicketDetail = z.infer<typeof detailSchema>;
 const connectionSchema = z.object({ connected: z.boolean(), source: z.enum(["environment", "saved", "none"]) });
 export const statusRpc = defineRpc({ name: "linear.status", input: z.object({}), output: connectionSchema });
@@ -37,7 +41,35 @@ export const disconnectRpc = defineRpc({ name: "linear.disconnect", input: z.obj
 
 export const listIssuesRpc = defineRpc({
   name: "linear.list-issues",
-  input: z.object({ cursor: z.string().optional() }),
+  // stateNames is a server-side selection (status chips); it takes precedence over the
+  // closed-states setting in the built filter (picking the Done chip shows Done tickets).
+  // Whether completed/canceled/duplicated tickets are shown comes from the saved setting,
+  // read server-side, so the client never sends a scope.
+  input: z.object({
+    cursor: z.string().optional(),
+    stateNames: z.array(z.string()).max(12).optional(),
+  }),
+  output: z.object({ issues: z.array(issueSchema), nextCursor: z.string().nullable() }),
+});
+
+// No aggregation exists in Linear's GraphQL: this is a bounded server pass (25 pages x 50)
+// over every assignment, respecting the closed-states setting. `complete` is false when
+// the cap was reached, in which case the client presents the numbers as a lower bound
+// rather than exact counts.
+export const countIssuesRpc = defineRpc({
+  name: "linear.count-issues",
+  input: z.object({}),
+  output: z.object({
+    total: z.number().int().nonnegative(),
+    byName: z.record(z.string(), z.number().int().nonnegative()),
+    byType: z.record(z.string(), z.number().int().nonnegative()),
+    complete: z.boolean(),
+  }),
+});
+
+export const searchIssuesRpc = defineRpc({
+  name: "linear.search-issues",
+  input: z.object({ term: z.string().min(2).max(200), cursor: z.string().optional() }),
   output: z.object({ issues: z.array(issueSchema), nextCursor: z.string().nullable() }),
 });
 
@@ -57,6 +89,7 @@ export const launchAgentRpc = defineRpc({
     modeId: z.string().min(1).optional(),
     thinkingOptionId: z.string().min(1).optional(),
     instructions: z.string().max(10_000).default(""),
+    markInProgress: z.boolean().default(false),
     requestId: z.string().uuid(),
   }),
   output: z.object({ agentId: z.string(), warnings: z.array(z.string()) }),
@@ -81,4 +114,17 @@ export const setDefaultPromptRpc = defineRpc({
   name: "linear.set-default-prompt",
   input: z.object({ template: z.string().max(8000) }),
   output: promptTemplateSchema,
+});
+
+// One settings contract for the whole plugin; the default-prompt RPCs above keep working
+// for compatibility.
+export const getSettingsRpc = defineRpc({
+  name: "linear.get-settings",
+  input: z.object({}),
+  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean(), showClosed: z.boolean() }),
+});
+export const setSettingsRpc = defineRpc({
+  name: "linear.set-settings",
+  input: z.object({ template: z.string().max(8000).optional(), markInProgress: z.boolean().optional(), showClosed: z.boolean().optional() }),
+  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean(), showClosed: z.boolean() }),
 });

@@ -6,18 +6,19 @@ import { test, type TestContext } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
 import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOptions } from "@getpaseo/client";
-import { buildContext, buildPrompt, issuePage, normalizeIssue, connection } from "./context";
+import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships, stateHistorySpans } from "./context";
 import { Credentials } from "./credentials";
-import { Launcher } from "./launch";
+import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
-import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, VIEWER_QUERY, type Post } from "./linear";
+import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, TEAM_STATES_QUERY, UPDATE_ISSUE_STATE_QUERY, resolveStartedState, listIssueFilter, type Post, type TeamState } from "./linear";
+import { countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
 // and the relationship fields the detail query requests.
 const rawIssue = {
   id: "issue-1", identifier: "ENG-42", title: "Fix the sign-in flow",
   description: "Keep the existing session alive.", url: "https://linear.app/example/issue/ENG-42",
-  state: { name: "In Progress" }, priorityLabel: "P1",
+  state: { name: "In Progress", type: "started" }, priorityLabel: "P1",
   project: { id: "project-1", name: "App", identifier: "APP", url: "https://linear.app/example/project/app" },
   team: { id: "team-1", name: "Engineering", key: "ENG" },
   labels: { nodes: [{ id: "label-1", name: "bug" }] },
@@ -32,13 +33,15 @@ const comment = {
   id: "comment-1", body: "Regression on mobile", createdAt: "2025-01-02T01:00:00.000Z",
   url: "https://linear.app/example/issue/ENG-42#comment-1", user: { name: "Tofu" },
 };
-const detail = { issue: normalizeIssue(rawIssue), context: buildContext(rawIssue, [comment]), warnings: [] };
-const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
+const detail = { issue: normalizeIssue(rawIssue), teamId: "team-1", context: buildContext(rawIssue, [comment]), warnings: [] };
+const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", markInProgress: false, requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
+// Test fakes that do not exercise the state transition: a no-op stub keeps the contract strict.
+const noMark = { markInProgress: async () => ({ changed: false }) };
 
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.get-settings", "linear.set-settings", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -99,16 +102,19 @@ test("network failures surface as connection errors", async (t) => {
   await assert.rejects(postGraphQL("key", "q", {}), /Could not reach/);
 });
 
-test("issue normalization reads workflow state, priority labels and label connections", () => {
+test("issue normalization reads workflow state, its category, priority labels and label connections", () => {
   const issue = normalizeIssue(rawIssue);
   assert.equal(issue.identifier, "ENG-42");
   assert.equal(issue.status, "In Progress");
+  assert.equal(issue.statusType, "started");
   assert.equal(issue.priority, "P1");
   assert.equal(issue.project, "App");
   assert.equal(issue.team, "Engineering");
   assert.deepEqual(issue.labels, ["bug"]);
   assert.equal(issue.description, rawIssue.description);
   assert.equal(issue.updatedAt, rawIssue.updatedAt);
+  assert.equal(normalizeIssue({ id: "x", title: "No category", state: { name: "Weird" } }).statusType, "");
+  assert.equal(normalizeIssue({ id: "x", title: "No state at all" }).statusType, "");
   assert.throws(() => normalizeIssue({ title: "Missing ID" }), /without an ID/);
 });
 
@@ -138,6 +144,73 @@ test("prompt preserves description, relationships, comments, user instructions a
   assert.throws(() => buildContext({ description: "x".repeat(200_001) }, []), /too large/);
 });
 
+test("relationships normalize relations and inverse relations into directed, de-duplicated statements", () => {
+  const both = relationships({
+    id: "issue-1",
+    relations: { nodes: [
+      { type: "blocks", issue: { id: "issue-1" }, relatedIssue: { id: "issue-2", identifier: "ENG-43", title: "Blocked work", url: "https://linear.app/example/issue/ENG-43" } },
+      { type: "duplicate", issue: { id: "issue-1" }, relatedIssue: { id: "issue-3", identifier: "ENG-44", title: "Copy ticket" } },
+      { type: "related", issue: { id: "issue-1" }, relatedIssue: { id: "issue-4", identifier: "ENG-45", title: "Nearby work" } },
+    ] },
+    inverseRelations: { nodes: [
+      { type: "blocks", issue: { id: "issue-5", identifier: "ENG-46", title: "Upstream" }, relatedIssue: { id: "issue-1" } },
+      { type: "duplicated", issue: { id: "issue-6", identifier: "ENG-47", title: "The copy" }, relatedIssue: { id: "issue-1" } },
+      { type: "related", issue: { id: "issue-7", identifier: "ENG-48", title: "Nearby too" }, relatedIssue: { id: "issue-1" } },
+    ] },
+  });
+  assert.deepEqual(both, [
+    { direction: "blocks", identifier: "ENG-43", title: "Blocked work", url: "https://linear.app/example/issue/ENG-43" },
+    { direction: "duplicates", identifier: "ENG-44", title: "Copy ticket" },
+    { direction: "related to", identifier: "ENG-45", title: "Nearby work" },
+    { direction: "blocked by", identifier: "ENG-46", title: "Upstream" },
+    { direction: "duplicated by", identifier: "ENG-47", title: "The copy" },
+    { direction: "related to", identifier: "ENG-48", title: "Nearby too" },
+  ]);
+  // The OW-1731 shape: no forward relations, inverse-only must still surface.
+  const inverseOnly = relationships({
+    id: "issue-1",
+    relations: { nodes: [] },
+    inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] },
+  });
+  assert.deepEqual(inverseOnly, [{ direction: "related to", identifier: "OW-1732", title: "Other ticket" }]);
+  // Relations-only still works, and unresolvable sides fall back to the list's direction.
+  const forwardOnly = relationships({
+    id: "issue-1",
+    relations: { nodes: [{ type: "blocks", issue: null, relatedIssue: { id: "issue-2", identifier: "ENG-43", title: "Blocked work" } }] },
+  });
+  assert.deepEqual(forwardOnly, [{ direction: "blocks", identifier: "ENG-43", title: "Blocked work" }]);
+  // Self-referencing entries and identical (direction, otherId) pairs are not emitted twice.
+  const duplicated = relationships({
+    id: "issue-1",
+    relations: { nodes: [
+      { type: "related", issue: { id: "issue-1" }, relatedIssue: { id: "issue-1" } },
+      { type: "related", issue: { id: "issue-1" }, relatedIssue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" } },
+    ] },
+    inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] },
+  });
+  assert.deepEqual(duplicated, [{ direction: "related to", identifier: "OW-1732", title: "Other ticket" }]);
+  // Missing or absent payloads produce nothing, never a crash.
+  assert.deepEqual(relationships({ id: "issue-1" }), []);
+  assert.deepEqual(relationships({}), []);
+  assert.deepEqual(relationships(null), []);
+});
+
+test("prompts render a relationships block above the snapshot only when the ticket has relationships", () => {
+  const inverseOnly = { ...rawIssue, relations: { nodes: [] }, inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] } };
+  const withRelations = { issue: normalizeIssue(inverseOnly), teamId: null, context: buildContext(inverseOnly, []), warnings: [] };
+  const prompt = buildPrompt(withRelations, "");
+  assert.ok(prompt.includes("Relationships:\n- related to OW-1732: Other ticket"));
+  assert.ok(prompt.indexOf("Relationships:") < prompt.indexOf("Linear ticket snapshot (JSON):"));
+  const template = "Handle {{ticket}}.\n\n{{instructions}}\n\n{{context}}";
+  const templated = buildPrompt(withRelations, "", template);
+  assert.ok(templated.includes("Relationships:\n- related to OW-1732: Other ticket"));
+  assert.ok(templated.indexOf("Relationships:") < templated.indexOf(`"id": "issue-1"`), "relationships precede the JSON snapshot in template prompts");
+  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), teamId: null, context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [] };
+  const plain = buildPrompt(without, "");
+  assert.ok(!plain.includes("Relationships:"), "no empty Relationships header");
+  assert.ok(!buildPrompt("raw context string", "").includes("Relationships:"));
+});
+
 test("a custom default prompt template renders ticket, instructions and context in place", () => {
   const template = "Handle {{ticket}}.\n\nPlan first, then implement and run the tests.\n\n{{instructions}}\n\n\nSnapshot:\n{{context}}";
   const prompt = buildPrompt({ ...detail, warnings: ["Comments unavailable"] }, input.instructions, template);
@@ -164,14 +237,35 @@ test("settings persist the template with private permissions and reset removes i
   const path = join(directory, "settings.json");
   try {
     const settings = new Settings(path);
-    assert.deepEqual(await settings.read(), { template: null });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
     const saved = await settings.save("Handle {{ticket}}\n{{context}}");
     assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await settings.read(), saved);
-    assert.deepEqual(await settings.save(""), { template: null });
+    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false });
     await assert.rejects(readFile(path), { code: "ENOENT" });
-    assert.deepEqual(await settings.read(), { template: null });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("the mark-in-progress setting round-trips without disturbing the saved template", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-linear-settings-mark-"));
+  const path = join(directory, "settings.json");
+  try {
+    const settings = new Settings(path);
+    await settings.patch({ markInProgress: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false });
+    await settings.save("Handle {{ticket}}\n{{context}}");
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false });
+    // The closed-states setting round-trips the same way and never disturbs the other fields.
+    await settings.patch({ showClosed: true });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true });
+    // Clearing the template keeps the flags; clearing the last flag with no template removes the file.
+    await settings.patch({ template: "" });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true });
+    await settings.patch({ markInProgress: false, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
+    await assert.rejects(readFile(path), { code: "ENOENT" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -218,8 +312,104 @@ test("ticket listing requests the authenticated user's assignments and forwards 
     assert.equal(call.key, "test-key");
     assert.equal(call.query, LIST_ISSUES_QUERY);
   }
-  assert.deepEqual(calls[0].variables, { first: 50, after: null });
-  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2" });
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "page-2", filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+});
+
+test("the list filter is deterministic; an explicit status selection beats the closed-states setting", () => {
+  assert.deepEqual(listIssueFilter(), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } });
+  assert.deepEqual(listIssueFilter(undefined, true), { assignee: { isMe: { eq: true } } });
+  assert.deepEqual(listIssueFilter([], false), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } });
+  assert.deepEqual(listIssueFilter(["Done", "  In Progress", "Done", "  "]), { assignee: { isMe: { eq: true } }, state: { name: { in: ["Done", "In Progress"] } } });
+  assert.deepEqual(listIssueFilter(["Done"], true), listIssueFilter(["Done"]));
+});
+
+test("ticket listing forwards the built filter to Linear", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (_key, _query, variables) => {
+    calls.push({ key: "test-key", query: LIST_ISSUES_QUERY, variables });
+    return { issues: { nodes: [rawIssue], pageInfo: { hasNextPage: false, endCursor: null } } };
+  };
+  const service = mockLinear(post);
+  await service.issues();
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+  await service.issues(undefined, undefined, true);
+  assert.deepEqual(calls[1].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
+  await service.issues(undefined, ["In Progress"]);
+  assert.deepEqual(calls[2].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { name: { in: ["In Progress"] } } } });
+});
+
+test("issue counts aggregate across pages, skip malformed nodes, and report completeness", async () => {
+  const calls: PostCall[] = [];
+  const pages = [
+    { issues: { nodes: [
+      { state: { name: "In Progress", type: "started" } },
+      { state: { name: "Done", type: "completed" } },
+      { state: null },
+      null,
+    ], pageInfo: { hasNextPage: true, endCursor: "c2" } } },
+    { issues: { nodes: [{ state: { name: "In Progress", type: "started" } }], pageInfo: { hasNextPage: false, endCursor: "c3" } } },
+  ];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return pages[calls.length - 1];
+  };
+  const counts = await mockLinear(post).countIssues();
+  assert.deepEqual(counts, { total: 4, byName: { "In Progress": 2, Done: 1, "No status": 1 }, byType: { started: 2, completed: 1, unknown: 1 }, complete: true });
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+  assert.deepEqual(calls[1].variables, { first: 50, after: "c2", filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } } });
+});
+
+test("issue counts follow the closed-states setting", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return { issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } };
+  };
+  await mockLinear(post).countIssues(true);
+  assert.deepEqual(calls[0].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
+});
+
+test("issue counts stop at the page cap and flag the sweep as incomplete", async () => {
+  let calls = 0;
+  const post: Post = async () => {
+    calls++;
+    return { issues: { nodes: [{ state: { name: "Todo", type: "unstarted" } }], pageInfo: { hasNextPage: true, endCursor: `c${calls}` } } };
+  };
+  const counts = await mockLinear(post).countIssues();
+  assert.equal(calls, 25);
+  assert.equal(counts.total, 25);
+  assert.equal(counts.complete, false);
+});
+
+test("list and count RPC contracts validate their inputs and outputs", () => {
+  assert.equal(listIssuesRpc.input.safeParse({ stateNames: ["Done"] }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ stateNames: Array.from({ length: 13 }, (_, i) => `s${i}`) }).success, false);
+  assert.equal(listIssuesRpc.input.safeParse({ cursor: "x", stateNames: ["a", "b"] }).success, true);
+  assert.equal(countIssuesRpc.input.safeParse({}).success, true);
+  assert.equal(countIssuesRpc.output.safeParse({ total: 3, byName: { a: 3 }, byType: { backlog: 3 }, complete: true }).success, true);
+  assert.equal(countIssuesRpc.output.safeParse({ total: -1, byName: {}, byType: {}, complete: true }).success, false);
+  assert.equal(searchIssuesRpc.input.safeParse({ term: "ab" }).success, true);
+  assert.equal(searchIssuesRpc.input.safeParse({ term: "a" }).success, false);
+  assert.equal(searchIssuesRpc.input.safeParse({ term: "x".repeat(201) }).success, false);
+});
+
+test("workspace search forwards the trimmed term and normalizes a result page", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    return { searchIssues: { nodes: [rawIssue], pageInfo: { hasNextPage: true, endCursor: "s2" } } };
+  };
+  const service = mockLinear(post);
+  const page = await service.searchIssues("  pr template  ");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].query, SEARCH_ISSUES_QUERY);
+  assert.deepEqual(calls[0].variables, { term: "pr template", first: 50, after: null });
+  assert.equal(page.nextCursor, "s2");
+  assert.equal(page.issues[0].identifier, "ENG-42");
+  const next = await service.searchIssues("pr template", "s2");
+  assert.deepEqual(calls[1].variables, { term: "pr template", first: 50, after: "s2" });
+  assert.equal(next.nextCursor, "s2");
 });
 
 test("details fetch relations and paginated comments using the resolved issue ID", async () => {
@@ -246,6 +436,47 @@ test("details fetch relations and paginated comments using the resolved issue ID
   assert.equal(JSON.parse(result.context).comments.length, 1);
   assert.equal(JSON.parse(result.context).comments[0].body, "Regression on mobile");
   assert.deepEqual(result.warnings, []);
+});
+
+test("detail queries state history and folds it into the context snapshot and prompt", async () => {
+  const calls: PostCall[] = [];
+  const post: Post = async (key, query, variables) => {
+    calls.push({ key, query, variables });
+    if (query === ISSUE_DETAIL_QUERY) return { issue: { ...rawIssue, dueDate: "2026-10-01", estimate: 3, stateHistory: { nodes: [
+      { state: { name: "Todo", type: "unstarted" }, startedAt: "2026-09-18T20:56:19Z", endedAt: "2026-09-18T21:02:05Z" },
+      { state: { name: "In Progress", type: "started" }, startedAt: "2026-09-18T21:02:05Z", endedAt: null },
+      { state: null },
+    ] } } };
+    return { issue: { comments: { nodes: [comment], pageInfo: { hasNextPage: false, endCursor: null } } } };
+  };
+  const result = await mockLinear(post).detail("ENG-42");
+  const parsed = JSON.parse(result.context);
+  assert.equal(result.issue.dueDate, "2026-10-01");
+  assert.equal(result.issue.estimate, 3);
+  assert.deepEqual(parsed.stateHistory.map((span: { state: string }) => span.state), ["Todo", "In Progress"]);
+  assert.equal(parsed.stateHistory[1].endedAt, null);
+  assert.match(buildPrompt(result, ""), /Status changes: Todo → In Progress \(currently In Progress\)/);
+  assert.doesNotMatch(buildPrompt(JSON.stringify({ issue: rawIssue, comments: [] }), ""), /Status changes/);
+});
+
+test("due dates and estimates normalize to explicit nulls when absent", () => {
+  assert.equal(normalizeIssue({ ...rawIssue, dueDate: "2026-10-01", estimate: 5 }).dueDate, "2026-10-01");
+  assert.equal(normalizeIssue({ ...rawIssue, dueDate: "2026-10-01", estimate: 5 }).estimate, 5);
+  assert.equal(normalizeIssue(rawIssue).dueDate, null);
+  assert.equal(normalizeIssue(rawIssue).estimate, null);
+});
+
+test("state history spans drop malformed entries and only appear in context when present", () => {
+  assert.deepEqual(stateHistorySpans({ stateHistory: { nodes: [
+    { state: { name: "Todo" }, startedAt: "s", endedAt: "e" },
+    { state: { name: "" } },
+    null,
+    42,
+    { state: { name: "Done" }, startedAt: "x", endedAt: null },
+  ] } }), [{ state: "Todo", startedAt: "s", endedAt: "e" }, { state: "Done", startedAt: "x", endedAt: null }]);
+  assert.deepEqual(stateHistorySpans(rawIssue), []);
+  assert.doesNotMatch(buildContext(rawIssue, [], []), /stateHistory/);
+  assert.match(buildContext(rawIssue, [], [{ state: "Todo", startedAt: "s", endedAt: null }]), /\"stateHistory\"/);
 });
 
 test("comment failures produce an explicit warning while the ticket details remain", async () => {
@@ -300,7 +531,7 @@ function mockPaseo(create: (options: PaseoWorkspaceAgentCreateOptions) => Promis
 
 test("launch fetches fresh context and starts exactly one agent for concurrent calls and response retries", async () => {
   let fetches = 0, creates = 0;
-  const launcher = new Launcher({ detail: async () => { fetches++; return detail; } });
+  const launcher = new Launcher({ ...noMark, detail: async () => { fetches++; return detail; } });
   const configured = { ...input, modeId: "code", thinkingOptionId: "high" };
   const paseo = mockPaseo(async (options) => {
     creates++;
@@ -322,7 +553,7 @@ test("launch fetches fresh context and starts exactly one agent for concurrent c
 
 test("a saved default prompt template shapes the agent's first prompt", async () => {
   let captured: string | undefined;
-  const launcher = new Launcher({ detail: async () => detail });
+  const launcher = new Launcher({ ...noMark, detail: async () => detail });
   const paseo = mockPaseo(async (options) => { captured = options.prompt; return { id: "agent-1" }; });
   const template = "Handle {{ticket}}.\nPlan first, then code.\n\n{{instructions}}\n\n{{context}}";
   const result = await launcher.start(input, paseo, { promptTemplate: template });
@@ -336,7 +567,7 @@ test("a saved default prompt template shapes the agent's first prompt", async ()
 
 test("pre-launch errors can retry, but uncertain agent creation is never automatically repeated", async () => {
   let fetches = 0, creates = 0;
-  const launcher = new Launcher({ detail: async () => {
+  const launcher = new Launcher({ ...noMark, detail: async () => {
     if (++fetches === 1) throw new Error("Linear unavailable");
     return detail;
   } });
@@ -349,15 +580,41 @@ test("pre-launch errors can retry, but uncertain agent creation is never automat
 });
 
 test("a missing project cannot create an agent", async () => {
-  const launcher = new Launcher({ detail: async () => { throw new Error("Should not fetch"); } });
+  const launcher = new Launcher({ ...noMark, detail: async () => { throw new Error("Should not fetch"); } });
   const paseo = mockPaseo(async () => { throw new Error("Should not create"); }, null);
   await assert.rejects(launcher.start(input, paseo), /project is no longer available/);
 });
 
 
+test("safeBranchName accepts canonical Linear names and rejects unsafe git refs", () => {
+  assert.equal(safeBranchName("victor/ow-1748-define-a-pr-template"), "victor/ow-1748-define-a-pr-template");
+  assert.equal(safeBranchName("  main  "), "main");
+  assert.equal(safeBranchName(""), null);
+  assert.equal(safeBranchName("   "), null);
+  assert.equal(safeBranchName(null), null);
+  assert.equal(safeBranchName(42), null);
+  assert.equal(safeBranchName("bad name"), null);
+  assert.equal(safeBranchName("a..b"), null);
+  assert.equal(safeBranchName("a~1"), null);
+  assert.equal(safeBranchName("a^b"), null);
+  assert.equal(safeBranchName("a:b"), null);
+  assert.equal(safeBranchName("a?b"), null);
+  assert.equal(safeBranchName("a*b"), null);
+  assert.equal(safeBranchName("a[b]"), null);
+  assert.equal(safeBranchName("a\\b"), null);
+  assert.equal(safeBranchName("a\u0000b"), null);
+  assert.equal(safeBranchName("/leading"), null);
+  assert.equal(safeBranchName(".hidden"), null);
+  assert.equal(safeBranchName("trailing/"), null);
+  assert.equal(safeBranchName("trailing."), null);
+  assert.equal(safeBranchName("@{u}"), null);
+  assert.equal(safeBranchName("branch.lock"), null);
+  assert.equal(safeBranchName(`long-${"x".repeat(250)}`), null);
+});
+
 test("Git launches create a new ticket worktree from the chosen project and base branch", async () => {
   let workspaces = 0;
-  const launcher = new Launcher({ detail: async () => detail }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => detail }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
   const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
     workspaces++;
     assert.deepEqual(options.source, { kind: "worktree", projectId: "project-1", cwd: "/repo", action: "branch-off", baseBranch: "refs/remotes/origin/main", branchName: "eng-42-5f6f1154" });
@@ -370,15 +627,69 @@ test("Git launches create a new ticket worktree from the chosen project and base
   await assert.rejects(launcher.start({ ...request, baseBranch: "refs/heads/other" }, paseo), /already been used/);
 });
 
+test("Git launches use Linear's canonical branch name when present and safe", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748-define-a-pr-template-in-ow-back" } };
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
+    assert.deepEqual(options.source, { kind: "worktree", projectId: "project-1", cwd: "/repo", action: "branch-off", baseBranch: "refs/remotes/origin/main", branchName: "victor/ow-1748-define-a-pr-template-in-ow-back" });
+  });
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  await launcher.start(request, paseo);
+});
+
+test("unsafe Linear branch names fall back to the synthesized slug", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "bad name~1" } };
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = mockPaseo(async () => ({ id: "agent-1" }), { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, (options) => {
+    assert.equal((options.source as { branchName?: string }).branchName, "eng-42-5f6f1154");
+  });
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  await launcher.start(request, paseo);
+});
+
+test("a colliding Linear branch name is retried exactly once with the request suffix", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748" } };
+  const attempts: PaseoWorkspaceCreateOptions[] = [];
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = {
+    projects: { list: async () => ({ projects: [{ projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }] }) },
+    workspaces: { create: async (options: PaseoWorkspaceCreateOptions) => {
+      attempts.push(options);
+      if (attempts.length === 1) throw new Error("fatal: a branch named 'victor/ow-1748' already exists");
+      return { agents: { create: async () => ({ id: "agent-1" }) } };
+    } },
+  } as unknown as PaseoApi;
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  const result = await launcher.start(request, paseo);
+  assert.equal(result.agentId, "agent-1");
+  assert.equal(attempts.length, 2);
+  assert.equal((attempts[0].source as { branchName?: string }).branchName, "victor/ow-1748");
+  assert.equal((attempts[1].source as { branchName?: string }).branchName, "victor/ow-1748-5f6f1154");
+  assert.equal(attempts[1].requestId, "5f6f1154-5838-4439-b981-b3c9d9831488-workspace-retry");
+});
+
+test("non-collision workspace failures are never retried", async () => {
+  const withBranch = { ...detail, issue: { ...detail.issue, branchName: "victor/ow-1748" } };
+  let attempts = 0;
+  const launcher = new Launcher({ ...noMark, detail: async () => withBranch }, async () => ({ branches: [{ id: "refs/remotes/origin/main", label: "origin/main" }], defaultBranch: null }));
+  const paseo = {
+    projects: { list: async () => ({ projects: [{ projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }] }) },
+    workspaces: { create: async () => { attempts++; throw new Error("network connection lost"); } },
+  } as unknown as PaseoApi;
+  const request = { ...input, baseBranch: "refs/remotes/origin/main" };
+  await assert.rejects(launcher.start(request, paseo), /could not be confirmed/);
+  assert.equal(attempts, 1);
+});
+
 test("removed or missing base branches fail before creating a workspace", async () => {
-  const launcher = new Launcher({ detail: async () => { throw new Error("Should not fetch"); } }, async () => ({ branches: [], defaultBranch: null }));
+  const launcher = new Launcher({ ...noMark, detail: async () => { throw new Error("Should not fetch"); } }, async () => ({ branches: [], defaultBranch: null }));
   const paseo = mockPaseo(async () => { throw new Error("Should not create"); }, { projectId: "project-1", projectKind: "git", projectRootPath: "/repo" }, () => { throw new Error("Should not create workspace"); });
   await assert.rejects(launcher.start({ ...input, baseBranch: "refs/heads/deleted" }, paseo), /available base branch/);
 });
 
 test("uncertain workspace creation is not repeated on request retry", async () => {
   let attempts = 0;
-  const launcher = new Launcher({ detail: async () => detail });
+  const launcher = new Launcher({ ...noMark, detail: async () => detail });
   const paseo = mockPaseo(async () => { throw new Error("Should not create agent"); }, undefined, () => {
     attempts++;
     throw new Error("Response lost after workspace creation");
@@ -386,4 +697,111 @@ test("uncertain workspace creation is not repeated on request retry", async () =
   await assert.rejects(launcher.start(input, paseo), /Workspace creation could not be confirmed/);
   await assert.rejects(launcher.start(input, paseo), /Workspace creation could not be confirmed/);
   assert.equal(attempts, 1);
+});
+
+test("started-state resolution prefers an explicit choice, then the in-progress name, then position", () => {
+  const states: TeamState[] = [
+    { id: "s1", name: "Todo", type: "unstarted", position: 1 },
+    { id: "s2", name: "In Review", type: "started", position: 2 },
+    { id: "s3", name: "In Progress", type: "started", position: 3 },
+    { id: "s4", name: "Done", type: "completed", position: 4 },
+  ];
+  assert.equal(resolveStartedState(states)?.name, "In Progress");
+  // An explicit choice wins over the name heuristic.
+  assert.equal(resolveStartedState(states, "s2")?.name, "In Review");
+  // Without an "in progress" name, the lowest-position started state wins.
+  assert.equal(resolveStartedState(states.filter((state) => state.id !== "s3"))?.name, "In Review");
+  // A team with no started states gets no target — never a write to "Todo" or "Done".
+  assert.equal(resolveStartedState(states.filter((state) => state.type === "unstarted")), null);
+});
+
+function makeStateService(path: string, states: unknown, mutationResponse: Record<string, unknown>, calls: unknown[][]): LinearService {
+  return new LinearService(new Credentials(path, "env-key"), (key, query, variables) => {
+    calls.push([query, variables]);
+    return Promise.resolve(query === UPDATE_ISSUE_STATE_QUERY ? mutationResponse : { team: { states: { nodes: states } } });
+  });
+}
+
+test("marking in progress is a no-op for tickets already in a started state", async () => {
+  const calls: unknown[][] = [];
+  const service = makeStateService(join(tmpdir(), `paseo-linear-mark-${process.pid}`), [], {}, calls);
+  const result = await service.markInProgress(normalizeIssue(rawIssue), "team-1");
+  assert.deepEqual(result, { changed: false });
+  assert.equal(calls.length, 0);
+});
+
+test("marking in progress sends exactly one mutation to the resolved state", async () => {
+  const calls: unknown[][] = [];
+  const service = makeStateService(
+    join(tmpdir(), `paseo-linear-mark2-${process.pid}`),
+    [{ id: "ip", name: "In Progress", type: "started", position: 2 }, { id: "ir", name: "In Review", type: "started", position: 1 }],
+    { issueUpdate: { success: true, issue: { id: "issue-1", state: { name: "In Progress" } } } },
+    calls,
+  );
+  const result = await service.markInProgress({ ...normalizeIssue(rawIssue), status: "Todo", statusType: "unstarted" }, "team-1");
+  assert.deepEqual(result, { changed: true });
+  const mutations = calls.filter(([query]) => query === UPDATE_ISSUE_STATE_QUERY);
+  assert.equal(mutations.length, 1);
+  assert.deepEqual(mutations[0][1], { id: "issue-1", stateId: "ip" });
+});
+
+test("mutation failures become notes: success=false, thrown errors, and teams without a started state", async () => {
+  const ticket = { ...normalizeIssue(rawIssue), status: "Todo", statusType: "unstarted" };
+  const rejected = makeStateService(join(tmpdir(), `paseo-linear-mark3-${process.pid}`), [{ id: "ip", name: "In Progress", type: "started", position: 2 }], { issueUpdate: { success: false } }, []);
+  const rejectedResult = await rejected.markInProgress(ticket, "team-1");
+  assert.equal(rejectedResult.changed, false);
+  assert.match(rejectedResult.note ?? "", /not applied/);
+
+  const throwing = makeStateService(join(tmpdir(), `paseo-linear-mark4-${process.pid}`), [{ id: "ip", name: "In Progress", type: "started", position: 2 }], {}, []);
+  (throwing as unknown as { post: Post }).post = (async (key: string, query: string, variables: Record<string, unknown>) => {
+    if (query === UPDATE_ISSUE_STATE_QUERY) throw new Error("mutation requires write access");
+    return { team: { states: { nodes: [{ id: "ip", name: "In Progress", type: "started", position: 2 }] } } };
+  }) as Post;
+  const thrownResult = await throwing.markInProgress(ticket, "team-1");
+  assert.equal(thrownResult.changed, false);
+  assert.match(thrownResult.note ?? "", /write access/);
+
+  const noStarted = makeStateService(join(tmpdir(), `paseo-linear-mark5-${process.pid}`), [{ id: "todo", name: "Todo", type: "unstarted", position: 1 }, { id: "done", name: "Done", type: "completed", position: 2 }], {}, []);
+  const noneResult = await noStarted.markInProgress(ticket, "team-1");
+  assert.equal(noneResult.changed, false);
+  assert.match(noneResult.note ?? "", /no "In Progress" state/);
+
+  const noTeam = makeStateService(join(tmpdir(), `paseo-linear-mark6-${process.pid}`), [], {}, []);
+  const teamless = await noTeam.markInProgress(ticket, null);
+  assert.equal(teamless.changed, false);
+  assert.match(teamless.note ?? "", /no team/);
+
+  const badTeam = makeStateService(join(tmpdir(), `paseo-linear-mark7-${process.pid}`), [], {}, []);
+  (badTeam as unknown as { post: Post }).post = (async () => { throw new Error("Entity not found: Team"); }) as Post;
+  const badResult = await badTeam.markInProgress(ticket, "team-1");
+  assert.equal(badResult.changed, false);
+  assert.match(badResult.note ?? "", /Could not load the ticket team's states/);
+});
+
+test("launch marks the ticket in progress only when opted in, and demotes failures to warnings", async () => {
+  const calls: unknown[][] = [];
+  const detailIssue = { ...rawIssue, state: { name: "Todo", type: "unstarted" } };
+  const linear = new LinearService(new Credentials(join(tmpdir(), `paseo-linear-launch-${process.pid}`), "env-key"), (key, query, variables) => {
+    calls.push([query, variables]);
+    if (query === ISSUE_DETAIL_QUERY) return Promise.resolve({ issue: detailIssue });
+    if (query === COMMENT_QUERY) return Promise.resolve({ issue: { comments: { nodes: [] } } });
+    if (query === TEAM_STATES_QUERY) return Promise.resolve({ team: { states: { nodes: [{ id: "ip", name: "In Progress", type: "started", position: 2 }] } } });
+    return Promise.resolve({ issueUpdate: { success: false } });
+  });
+  const launcher = new Launcher(linear);
+  const paseo = mockPaseo(async () => ({ id: "agent-1" }));
+
+  // Off (the default): the agent launches and no state mutation is attempted.
+  const off = await launcher.start({ ...input, markInProgress: false }, paseo);
+  assert.equal(off.warnings.length, 0);
+  assert.equal(calls.filter(([query]) => query === UPDATE_ISSUE_STATE_QUERY).length, 0);
+
+  // On: the mutation runs, and Linear's refusal becomes a warning, not a failure.
+  const on = await launcher.start({ ...input, markInProgress: true, requestId: "6f7f2265-5949-4548-a092-c4d0e4942599" }, paseo, { markInProgress: true });
+  assert.equal(on.agentId, "agent-1");
+  assert.equal(on.warnings.length, 1);
+  assert.match(on.warnings[0], /not applied/);
+  const mutations = calls.filter(([query]) => query === UPDATE_ISSUE_STATE_QUERY);
+  assert.equal(mutations.length, 1);
+  assert.deepEqual(mutations[0][1], { id: "issue-1", stateId: "ip" });
 });
