@@ -16,7 +16,7 @@ From npm, with Paseo 0.9 or newer (the pinned package and its production
 dependencies are installed for you):
 
 ```sh
-paseo plugin add npm:paseo-linear-tickets@0.1.0
+paseo plugin add npm:paseo-linear-tickets@0.1.1
 ```
 
 From a local checkout:
