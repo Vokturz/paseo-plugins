@@ -57,7 +57,7 @@ export function BrandMark({ brand, label, theme, size = 18, radius }: { brand: s
   const uri = providerPng[brand];
   const box = size + 8;
   return <View style={{ width: box, height: box, borderRadius: radius ?? box / 2, backgroundColor: theme.colors.surface2, alignItems: "center", justifyContent: "center" }}>
-    {uri ? <Image accessibilityLabel={label ?? brand} source={{ uri }} resizeMode="contain" style={{ width: size, height: size }} /> : <Icon name="Bot" size={size} color={theme.colors.foregroundMuted} />}
+    {uri ? <Image accessibilityLabel={label ?? brand} source={{ uri }} resizeMode="contain" style={{ width: size, height: size, ...(brand === "linear" ? { tintColor: theme.colors.foreground } : {}) }} /> : <Icon name="Bot" size={size} color={theme.colors.foregroundMuted} />}
   </View>;
 }
 

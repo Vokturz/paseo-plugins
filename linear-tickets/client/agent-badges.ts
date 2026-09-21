@@ -3,6 +3,7 @@ import type { PluginClientContext, PluginButtonRegistration } from "@getpaseo/pl
 import { Linking, Platform } from "react-native";
 import { linearAgentReference } from "./agent-reference";
 import { openExternalUrl } from "./open-link";
+import { LinearButtonIcon } from "./linear-icon";
 
 /** Keeps an agent-specific Linear badge attached to the sticky composer area. */
 export function installLinearAgentBadges(client: PluginClientContext): () => void {
@@ -29,7 +30,7 @@ export function installLinearAgentBadges(client: PluginClientContext): () => voi
       button: {
         title: `Open ${reference.identifier} in Linear`,
         label: reference.identifier,
-        icon: "SquareKanban",
+        icon: LinearButtonIcon,
         behavior: { kind: "action", onPress: () => openExternalUrl(reference.url, { platform, linking: Linking }) },
       },
     });
