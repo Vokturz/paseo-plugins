@@ -3,7 +3,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
+import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
 import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, issueStatus, statusChangesText, statusCounts, type SortDirection, type SortField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
@@ -16,6 +16,9 @@ import { MarkdownPreview } from "./markdown-preview";
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
 type ModelChoice = { id: string; label: string; provider: string; description?: string; thinkingOptions: ThinkingOption[]; defaultThinkingOptionId?: string };
 type ModeChoice = { id: string; label: string; description?: string; icon?: string };
+type LinkedAgent = { id: string; title: string | null; status: string; updatedAt: string };
+
+const CACHE_MAX_AGE_MS = 5 * 60_000;
 
 function message(error: unknown) { return error instanceof Error ? error.message : "Something went wrong. Please try again."; }
 // Used only for request deduplication, never as a security token.
@@ -27,7 +30,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const paseo = usePaseo();
   const getBranches = useRpc(branchesRpc);
   const getStatus = useRpc(statusRpc), connect = useRpc(connectRpc), disconnect = useRpc(disconnectRpc);
-  const getIssues = useRpc(listIssuesRpc), getIssuesCount = useRpc(countIssuesRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
+  const getIssues = useRpc(listIssuesRpc), getIssuesCount = useRpc(countIssuesRpc), getCachedOverview = useRpc(cachedOverviewRpc), getDetail = useRpc(issueContextRpc), start = useRpc(launchAgentRpc);
   const searchAll = useRpc(searchIssuesRpc);
   const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
   const getSettings = useRpc(getSettingsRpc), saveSettings = useRpc(setSettingsRpc);
@@ -41,6 +44,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [issues, setIssues] = useState<Issue[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [counts, setCounts] = useState<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean } | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<Issue[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -80,7 +84,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [agent, setAgent] = useState<{ agentId: string; warnings: string[] } | null>(null);
+  const [linkedAgents, setLinkedAgents] = useState<LinkedAgent[]>([]);
+  const [linkedAgentsLoading, setLinkedAgentsLoading] = useState(false);
   const launchRequest = useRef<{ fingerprint: string; id: string } | null>(null);
+  const statusRef = useRef<string | null>(null);
 
   const run = async (label: string, task: () => Promise<void>) => {
     if (busyRef.current) return;
@@ -90,7 +97,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   };
 
   const loadIssues = useCallback(async (next?: string, filter?: { status: string | null }) => {
-    const f = filter ?? { status };
+    const f = filter ?? { status: statusRef.current };
     const page = await getIssues({
       ...(next ? { cursor: next } : {}),
       ...(f.status ? { stateNames: [f.status] } : {}),
@@ -98,8 +105,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     if (next && page.nextCursor === next) throw new Error("Linear repeated a page. Refresh the ticket list to continue.");
     setIssues((previous) => [...new Map((next ? [...previous, ...page.issues] : page.issues).map((issue) => [issue.id, issue])).values()]);
     setCursor(page.nextCursor);
+    if (!next && !f.status) setLastUpdatedAt(new Date().toISOString());
     return page.nextCursor;
-  }, [getIssues, status]);
+  }, [getIssues]);
 
   const refreshCounts = useCallback(async () => {
     try { setCounts(await getIssuesCount({})); } catch { /* counts are non-critical; the list still loads without them */ }
@@ -151,10 +159,19 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   useEffect(() => {
     void run("Loading connection", async () => {
       const status = await getStatus({}); setConnection(status);
-      if (status.connected) { await loadIssues(); void refreshCounts(); }
+      if (status.connected) {
+        const cached = await getCachedOverview({}).catch(() => null);
+        if (cached) {
+          setIssues(cached.issues); setCursor(cached.nextCursor); setCounts(cached.counts ?? null); setLastUpdatedAt(cached.updatedAt);
+        }
+        const cachedTime = cached ? Date.parse(cached.updatedAt) : Number.NaN;
+        if (!Number.isFinite(cachedTime) || Date.now() - cachedTime >= CACHE_MAX_AGE_MS) {
+          await loadIssues(undefined, { status: null }); void refreshCounts();
+        } else if (!cached?.counts) void refreshCounts();
+      }
     });
     void loadOptions();
-  }, [getStatus, loadIssues, loadOptions]);
+  }, [getStatus, getCachedOverview, loadIssues, loadOptions, refreshCounts]);
 
   useEffect(() => {
     void getTemplate({}).then((result) => {
@@ -179,6 +196,39 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
   }, [selected, getDetail, detailVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLinkedAgents([]);
+    if (!selected) { setLinkedAgentsLoading(false); return; }
+    setLinkedAgentsLoading(true);
+    void paseo.agents.list({
+      filter: { labels: { "linear.issueId": selected.id }, includeArchived: false },
+      sort: [{ key: "updated_at", direction: "desc" }],
+      page: { limit: 20 },
+    }).then((result) => {
+      if (!cancelled) setLinkedAgents(result.entries.map(({ agent }) => ({ id: agent.id, title: agent.title, status: agent.status, updatedAt: agent.updatedAt })));
+    }, () => { if (!cancelled) setLinkedAgents([]); })
+      .finally(() => { if (!cancelled) setLinkedAgentsLoading(false); });
+    return () => { cancelled = true; };
+  }, [paseo, selected]);
+
+  useEffect(() => {
+    if (!selected) return;
+    return paseo.agents.subscribe((update) => {
+      if (update.kind === "remove") {
+        setLinkedAgents((previous) => previous.filter((item) => item.id !== update.agentId));
+        return;
+      }
+      const linkedIssueId = update.agent.labels?.["linear.issueId"];
+      if (update.agent.archivedAt || linkedIssueId !== selected.id) {
+        setLinkedAgents((previous) => previous.filter((item) => item.id !== update.agent.id));
+        return;
+      }
+      const linked = { id: update.agent.id, title: update.agent.title, status: update.agent.status, updatedAt: update.agent.updatedAt };
+      setLinkedAgents((previous) => [linked, ...previous.filter((item) => item.id !== linked.id)]);
+    });
+  }, [paseo, selected]);
 
   // Workspace-wide search: a short pause after typing, then Linear's own search over every
   // team the key can see. Results render in their own section, de-duplicated against the
@@ -249,7 +299,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         : optionsLoading || branchesLoading ? "Loading choices…"
           : !detail ? "Loading ticket details…" : "";
   const changeStatus = (name: string | null) => {
-    setStatus(name); setIssues([]); setCursor(null);
+    statusRef.current = name; setStatus(name); setIssues([]); setCursor(null);
     void run("Loading tickets", async () => { await loadIssues(undefined, { status: name }); });
   };
   const choose = (issue: Issue) => {
@@ -261,6 +311,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     if (launchRequest.current?.fingerprint !== fingerprint) launchRequest.current = { fingerprint, id: requestId() };
     const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, markInProgress, requestId: launchRequest.current.id });
     setAgent(result);
+    setLinkedAgents((previous) => previous.some((item) => item.id === result.agentId) ? previous : [{ id: result.agentId, title: `${selected.identifier}: ${selected.title}`, status: "initializing", updatedAt: new Date().toISOString() }, ...previous]);
   });
   const copyContext = () => {
     if (!detail) return;
@@ -420,7 +471,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <Text style={t.muted}>{connection.source === "environment" ? "Key supplied by the daemon environment (LINEAR_API_KEY)." : "Key saved on this Paseo host."}</Text>
         </View>
         {connection.source !== "environment" && <Button title="Disconnect" icon="Unplug" tone="danger" onPress={() => void run("Disconnecting", async () => {
-          setConnection(await disconnect({})); setIssues([]); setCounts(null); setSearchResults([]); setSearchError(null); setSelected(null); setAgent(null); setCursor(null); setStatus(null); setQuery("");
+          setConnection(await disconnect({})); setIssues([]); setCounts(null); setLastUpdatedAt(null); setSearchResults([]); setSearchError(null); setSelected(null); setAgent(null); setCursor(null); statusRef.current = null; setStatus(null); setQuery("");
         })} />}
       </View>}
 
@@ -456,6 +507,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             {detail && statusChangesText(detail.context) && <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Icon name="History" size={13} color={colors.foregroundMuted} />
               <Text style={{ ...t.muted, fontSize: 12 }}>Status history: {statusChangesText(detail.context)}</Text>
+            </View>}
+
+            {(linkedAgentsLoading || linkedAgents.length > 0) && <View style={{ gap: 8 }}>
+              <FieldLabel title="Paseo agents" icon="Bot" hint={linkedAgentsLoading ? "loading linked agents…" : `${linkedAgents.length} linked`} t={t} />
+              {linkedAgents.slice(0, 4).map((linked) => <View key={linked.id} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <View style={{ flex: 1, minWidth: 180 }}>
+                  <Text numberOfLines={1} style={t.strong}>{linked.title || `Agent ${linked.id.slice(0, 8)}`}</Text>
+                  <Text style={t.muted}>{linked.status} · {formatRelativeDate(linked.updatedAt)}</Text>
+                </View>
+                {navigation ? <Button title="Open agent" icon="ArrowUpRight" size="sm" onPress={() => navigation.openAgent({ agentId: linked.id })} /> : <Text selectable style={t.mono}>{linked.id}</Text>}
+              </View>)}
             </View>}
 
             <Divider t={t} spaced />
@@ -574,7 +636,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         </View>
 
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
-          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{!showClosed ? " (open)" : ""}{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}</Text>
+          <Text style={{ ...t.muted, fontWeight: "600" }}>{visible.length} of {issues.length} tickets{!showClosed ? " (open)" : ""}{cursor ? " loaded" : ""}{status ? ` · ${status}` : ""}{lastUpdatedAt ? ` · Updated ${formatRelativeDate(lastUpdatedAt)}` : ""}</Text>
           <Text style={t.muted}>Sorted by {dateField === "priority" ? (dateDirection === "newest" ? "priority · highest first" : "priority · lowest first") : dateField === "dueDate" ? (dateDirection === "newest" ? "due date · latest first" : "due date · soonest first") : dateField === "updatedAt" ? (dateDirection === "newest" ? "last updated · newest first" : "last updated · oldest first") : dateDirection === "newest" ? "date created · newest first" : "date created · oldest first"}</Text>
         </View>
 

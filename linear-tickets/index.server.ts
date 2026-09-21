@@ -1,20 +1,46 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { branchesRpc, connectRpc, countIssuesRpc, getSettingsRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc } from "./shared/contracts";
+import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, getSettingsRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc } from "./shared/contracts";
 import { projectBranches } from "./server/projects";
 import { LinearService } from "./server/linear";
 import { Launcher } from "./server/launch";
 import { Settings } from "./server/settings";
 import { DEFAULT_PROMPT_TEMPLATE } from "./shared/contracts";
+import { cacheScope, TicketCache } from "./server/cache";
+import { Credentials } from "./server/credentials";
 
 export default function contribute(server: PluginServerContext) {
-  const linear = new LinearService();
+  const credentials = new Credentials();
+  const linear = new LinearService(credentials);
   const launcher = new Launcher(linear);
   const settings = new Settings();
+  const cache = new TicketCache();
+  const cacheIdentity = async () => {
+    const connection = await credentials.read();
+    return connection.key ? cacheScope(connection.key) : null;
+  };
   server.handle(statusRpc, () => linear.status());
   server.handle(connectRpc, ({ apiKey }) => linear.authenticate(apiKey));
   server.handle(disconnectRpc, () => linear.disconnect());
-  server.handle(listIssuesRpc, async ({ cursor, stateNames }) => linear.issues(cursor, stateNames, (await settings.read()).showClosed));
-  server.handle(countIssuesRpc, async () => linear.countIssues((await settings.read()).showClosed));
+  server.handle(listIssuesRpc, async ({ cursor, stateNames }) => {
+    const showClosed = (await settings.read()).showClosed;
+    const page = await linear.issues(cursor, stateNames, showClosed);
+    if (!cursor && !stateNames?.length) {
+      const scope = await cacheIdentity();
+      if (scope) await cache.saveIssues(scope, showClosed, page);
+    }
+    return page;
+  });
+  server.handle(countIssuesRpc, async () => {
+    const showClosed = (await settings.read()).showClosed;
+    const counts = await linear.countIssues(showClosed);
+    const scope = await cacheIdentity();
+    if (scope) await cache.saveCounts(scope, showClosed, counts);
+    return counts;
+  });
+  server.handle(cachedOverviewRpc, async () => {
+    const scope = await cacheIdentity();
+    return scope ? cache.read(scope, (await settings.read()).showClosed) : null;
+  });
   server.handle(searchIssuesRpc, ({ term, cursor }) => linear.searchIssues(term, cursor));
   server.handle(issueContextRpc, ({ id }) => linear.detail(id));
   server.handle(branchesRpc, ({ projectId }, { paseo }) => projectBranches(paseo, projectId));

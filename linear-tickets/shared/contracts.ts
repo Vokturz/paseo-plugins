@@ -56,15 +56,28 @@ export const listIssuesRpc = defineRpc({
 // over every assignment, respecting the closed-states setting. `complete` is false when
 // the cap was reached, in which case the client presents the numbers as a lower bound
 // rather than exact counts.
+export const issueCountsSchema = z.object({
+  total: z.number().int().nonnegative(),
+  byName: z.record(z.string(), z.number().int().nonnegative()),
+  byType: z.record(z.string(), z.number().int().nonnegative()),
+  complete: z.boolean(),
+});
+
 export const countIssuesRpc = defineRpc({
   name: "linear.count-issues",
   input: z.object({}),
+  output: issueCountsSchema,
+});
+
+export const cachedOverviewRpc = defineRpc({
+  name: "linear.cached-overview",
+  input: z.object({}),
   output: z.object({
-    total: z.number().int().nonnegative(),
-    byName: z.record(z.string(), z.number().int().nonnegative()),
-    byType: z.record(z.string(), z.number().int().nonnegative()),
-    complete: z.boolean(),
-  }),
+    issues: z.array(issueSchema),
+    nextCursor: z.string().nullable(),
+    updatedAt: z.string(),
+    counts: issueCountsSchema.optional(),
+  }).nullable(),
 });
 
 export const searchIssuesRpc = defineRpc({

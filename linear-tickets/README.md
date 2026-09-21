@@ -64,6 +64,12 @@ highest / lowest); missing dates and tickets with no priority sort last. Sorting
 applies to the loaded tickets; choose **Load all tickets** to include
 every assignment. Archived tickets are excluded.
 
+The most recent first page and its status counts are cached on the Paseo host. Reopening
+the surface within five minutes uses that snapshot immediately instead of querying Linear
+again; older snapshots are shown while a fresh request runs. The list shows when it was
+last updated, and **Refresh tickets** always requests a fresh page. Caches are isolated by
+the connected Linear credential and by the open/closed-ticket setting.
+
 Rows show the ticket's priority, a status colour and icon for its workflow state,
 label chips, a due date and estimate when your team sets them, and a relative
 timestamp ("3h ago"), with the absolute date in the accessibility label. Status colours follow Linear's workflow category (`started`,
@@ -81,6 +87,15 @@ ticket — the worktree is created once more with a short request-id suffix appe
 Your existing checkout is not switched. Remote
 branches use their locally fetched state; fetch in the project first if you need
 the newest remote commits. Projects without Git use their project directory.
+
+Each created agent keeps the Linear issue ID, identifier and URL in its Paseo labels.
+Opening that ticket later shows its linked agents and lets you jump straight back to
+them, including after the plugin or daemon restarts. In the other direction, the
+agent shows a persistent ticket-number pill beside its composer; selecting it opens the
+issue in Linear. The command-center action **Open linked Linear ticket** opens the ticket
+panel as a fallback. These references live with Paseo's agent records rather than being
+copied into the agent prompt. Archived agents are omitted from a ticket's linked-agent
+list and their pills are removed.
 
 The launch fetches fresh details, relationships and comments through Linear's GraphQL API.
 Relationships arrive in both directions — links the ticket makes and links pointing at it
@@ -155,7 +170,8 @@ file uses mode `0600`; it is a plaintext credential, not an OS keychain entry.
 key; environment keys must be removed from the daemon environment followed by a
 restart. All clients connected to this host share the same Linear account. Saved
 default-prompt templates live next to the key in `settings.json` with the same
-permission pattern.
+permission pattern. The ticket snapshot cache lives in `cache.json` with the same
+private permissions; its credential scope is a one-way hash, never the API key itself.
 
 The plugin talks directly to Linear's official [GraphQL API](https://linear.app/developers/graphql)
 at `https://api.linear.app/graphql`. Its queries are read-only; the only write is the
