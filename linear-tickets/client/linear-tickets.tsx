@@ -203,7 +203,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     if (!selected) { setLinkedAgentsLoading(false); return; }
     setLinkedAgentsLoading(true);
     void paseo.agents.list({
-      filter: { labels: { "linear.issueId": selected.id }, includeArchived: true },
+      filter: { labels: { "linear.issueId": selected.id }, includeArchived: false },
       sort: [{ key: "updated_at", direction: "desc" }],
       page: { limit: 20 },
     }).then((result) => {
@@ -211,6 +211,23 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     }, () => { if (!cancelled) setLinkedAgents([]); })
       .finally(() => { if (!cancelled) setLinkedAgentsLoading(false); });
     return () => { cancelled = true; };
+  }, [paseo, selected]);
+
+  useEffect(() => {
+    if (!selected) return;
+    return paseo.agents.subscribe((update) => {
+      if (update.kind === "remove") {
+        setLinkedAgents((previous) => previous.filter((item) => item.id !== update.agentId));
+        return;
+      }
+      const linkedIssueId = update.agent.labels?.["linear.issueId"];
+      if (update.agent.archivedAt || linkedIssueId !== selected.id) {
+        setLinkedAgents((previous) => previous.filter((item) => item.id !== update.agent.id));
+        return;
+      }
+      const linked = { id: update.agent.id, title: update.agent.title, status: update.agent.status, updatedAt: update.agent.updatedAt };
+      setLinkedAgents((previous) => [linked, ...previous.filter((item) => item.id !== linked.id)]);
+    });
   }, [paseo, selected]);
 
   // Workspace-wide search: a short pause after typing, then Linear's own search over every

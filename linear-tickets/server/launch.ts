@@ -4,7 +4,6 @@ import { launchAgentRpc } from "../shared/contracts";
 import { buildPrompt } from "./context";
 import type { LinearService } from "./linear";
 import { findProject, readBranches } from "./projects";
-import { LINEAR_TICKET_TIMELINE_KIND, LINEAR_TICKET_TIMELINE_VERSION } from "../shared/timeline";
 
 type Start = RpcInput<typeof launchAgentRpc>;
 type Result = { agentId: string; warnings: string[] };
@@ -113,26 +112,6 @@ export class Launcher {
       throw new Error("Agent creation could not be confirmed. Check the workspace's agents before reopening this ticket to try again.");
     });
     const warnings = [...detail.warnings];
-    // Keep the reverse link visible in the conversation. Timeline insertion is
-    // deliberately best-effort: the agent already exists and must still be returned.
-    if (agent.timeline?.append) {
-      try {
-        await agent.timeline.append({
-          type: "plugin",
-          id: `linear-ticket-${detail.issue.id}`,
-          kind: LINEAR_TICKET_TIMELINE_KIND,
-          version: LINEAR_TICKET_TIMELINE_VERSION,
-          data: {
-            issueId: detail.issue.id,
-            identifier: detail.issue.identifier,
-            title: detail.issue.title,
-            url: detail.issue.url,
-          },
-        });
-      } catch {
-        warnings.push("The agent started, but its Linear ticket shortcut could not be added to the timeline.");
-      }
-    }
     if (options.markInProgress) {
       // Best-effort: the agent already exists, so a failed transition degrades to a
       // warning instead of failing the launch. The requestId/fingerprint dedupe above

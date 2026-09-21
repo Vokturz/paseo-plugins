@@ -91,12 +91,11 @@ the newest remote commits. Projects without Git use their project directory.
 Each created agent keeps the Linear issue ID, identifier and URL in its Paseo labels.
 Opening that ticket later shows its linked agents and lets you jump straight back to
 them, including after the plugin or daemon restarts. In the other direction, the
-agent's **Linear ticket** panel opens the linked issue in Linear. These references live
-with Paseo's agent records rather than being copied into the agent prompt.
-New agents also receive a visible Linear ticket card in their conversation timeline,
-with a direct **Open in Linear** action. From any agent view, the command center action
-**Open linked Linear ticket** opens the same panel; this provides a route for linked
-agents created before timeline cards were introduced.
+agent shows a persistent ticket-number pill beside its composer; selecting it opens the
+issue in Linear. The command-center action **Open linked Linear ticket** opens the ticket
+panel as a fallback. These references live with Paseo's agent records rather than being
+copied into the agent prompt. Archived agents are omitted from a ticket's linked-agent
+list and their pills are removed.
 
 The launch fetches fresh details, relationships and comments through Linear's GraphQL API.
 Relationships arrive in both directions — links the ticket makes and links pointing at it

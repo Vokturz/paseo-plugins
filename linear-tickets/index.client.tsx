@@ -1,13 +1,12 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { LinearTicketsSurface } from "./client/linear-tickets";
 import { AgentLinearTicketPanel } from "./client/agent-ticket";
-import { LinearTicketTimelineCard } from "./client/ticket-timeline";
-import { LINEAR_TICKET_TIMELINE_KIND, LINEAR_TICKET_TIMELINE_VERSION, linearTicketTimelineSchema } from "./shared/timeline";
+import { installLinearAgentBadges } from "./client/agent-badges";
 
 export default function contribute(client: PluginClientContext) {
   client.addSurface("linear-tickets", LinearTicketsSurface);
   client.addWorkspacePanel({ id: "linear-ticket", title: "Linear ticket", icon: "SquareKanban", context: "agent", locations: ["workspace", "explorer"], Component: AgentLinearTicketPanel });
-  client.addTimelineRenderer({ kind: LINEAR_TICKET_TIMELINE_KIND, version: LINEAR_TICKET_TIMELINE_VERSION, schema: linearTicketTimelineSchema, Component: LinearTicketTimelineCard });
+  const removeAgentBadges = installLinearAgentBadges(client);
   // Sidebar and Command Center icons must be Lucide names: the host validates them with
   // resolvePluginIcon() and rejects anything else, so the Linear brand mark (used inside the
   // surface) cannot be rendered here. SquareKanban is the closest Lucide stand-in.
@@ -20,5 +19,5 @@ export default function contribute(client: PluginClientContext) {
     id: "open-linked-linear-ticket", title: "Open linked Linear ticket", icon: "SquareKanban", context: "agent", keywords: ["linear", "issue", "ticket"],
     onSelect({ openPanel }) { openPanel("linear-ticket"); },
   });
-  return () => {};
+  return removeAgentBadges;
 }
