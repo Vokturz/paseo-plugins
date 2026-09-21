@@ -93,6 +93,10 @@ Opening that ticket later shows its linked agents and lets you jump straight bac
 them, including after the plugin or daemon restarts. In the other direction, the
 agent's **Linear ticket** panel opens the linked issue in Linear. These references live
 with Paseo's agent records rather than being copied into the agent prompt.
+New agents also receive a visible Linear ticket card in their conversation timeline,
+with a direct **Open in Linear** action. From any agent view, the command center action
+**Open linked Linear ticket** opens the same panel; this provides a route for linked
+agents created before timeline cards were introduced.
 
 The launch fetches fresh details, relationships and comments through Linear's GraphQL API.
 Relationships arrive in both directions — links the ticket makes and links pointing at it

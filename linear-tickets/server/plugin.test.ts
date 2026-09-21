@@ -533,6 +533,7 @@ function mockPaseo(create: (options: PaseoWorkspaceAgentCreateOptions) => Promis
 
 test("launch fetches fresh context and starts exactly one agent for concurrent calls and response retries", async () => {
   let fetches = 0, creates = 0;
+  const timelineItems: unknown[] = [];
   const launcher = new Launcher({ ...noMark, detail: async () => { fetches++; return detail; } });
   const configured = { ...input, modeId: "code", thinkingOptionId: "high" };
   const paseo = mockPaseo(async (options) => {
@@ -541,7 +542,7 @@ test("launch fetches fresh context and starts exactly one agent for concurrent c
     assert.equal(options.labels?.["linear.issueId"], "issue-1");
     assert.ok(options.prompt?.includes("Regression on mobile"));
     assert.ok(options.prompt?.includes(input.instructions));
-    return { id: "agent-1" };
+    return { id: "agent-1", timeline: { append: async (item: unknown) => { timelineItems.push(item); return { seq: 1, epoch: "test" }; } } };
   });
   const alias = { ...configured, requestId: "3bca04b9-12a5-4764-8b11-98ad10c15c95" };
   const results = await Promise.all([launcher.start(configured, paseo), launcher.start(configured, paseo), launcher.start(alias, paseo)]);
@@ -550,7 +551,25 @@ test("launch fetches fresh context and starts exactly one agent for concurrent c
   await launcher.start(alias, paseo);
   assert.equal(fetches, 1);
   assert.equal(creates, 1);
+  assert.deepEqual(timelineItems, [{
+    type: "plugin",
+    id: "linear-ticket-issue-1",
+    kind: "linear-ticket-link",
+    version: 1,
+    data: { issueId: "issue-1", identifier: "ENG-42", title: "Fix the sign-in flow", url: "https://linear.app/example/issue/ENG-42" },
+  }]);
   await assert.rejects(launcher.start({ ...configured, id: "ENG-99" }, paseo), /already been used/);
+});
+
+test("a timeline shortcut failure never hides a successfully created agent", async () => {
+  const launcher = new Launcher({ ...noMark, detail: async () => detail });
+  const paseo = mockPaseo(async () => ({
+    id: "agent-1",
+    timeline: { append: async () => { throw new Error("timeline unavailable"); } },
+  }));
+  const result = await launcher.start(input, paseo);
+  assert.equal(result.agentId, "agent-1");
+  assert.match(result.warnings[0], /shortcut could not be added/);
 });
 
 test("a saved default prompt template shapes the agent's first prompt", async () => {
