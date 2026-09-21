@@ -5,6 +5,40 @@ import { dirname, join } from "node:path";
 
 export const MAX_TEMPLATE_LENGTH = 8_000;
 
+export type LaunchPreference = { model: string; modeId?: string; thinkingOptionId?: string };
+export type PluginSettings = {
+  template: string | null;
+  markInProgress: boolean;
+  showClosed: boolean;
+  lastProvider: string | null;
+  launchPreferences: Record<string, LaunchPreference>;
+};
+
+type SettingsFile = {
+  template?: string;
+  markInProgress?: boolean;
+  showClosed?: boolean;
+  lastProvider?: string;
+  launchPreferences?: Record<string, LaunchPreference>;
+};
+
+function savedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 500 ? value : undefined;
+}
+
+function normalizeLaunchPreferences(value: unknown): Record<string, LaunchPreference> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).slice(0, 50).flatMap(([provider, raw]) => {
+    if (!savedString(provider) || !raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const candidate = raw as Record<string, unknown>;
+    const model = savedString(candidate.model);
+    if (!model) return [];
+    const modeId = savedString(candidate.modeId);
+    const thinkingOptionId = savedString(candidate.thinkingOptionId);
+    return [[provider, { model, ...(modeId ? { modeId } : {}), ...(thinkingOptionId ? { thinkingOptionId } : {}) }]];
+  }));
+}
+
 // Returns null for an empty template (meaning: use the built-in default).
 export function normalizeTemplate(raw: string): string | null {
   const template = raw.trim();
@@ -23,51 +57,65 @@ export class Settings {
     private readonly path = join(process.env.PASEO_HOME?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".paseo"), "linear-tickets", "settings.json"),
   ) {}
 
-  private async readFile(): Promise<{ template?: string; markInProgress?: boolean; showClosed?: boolean }> {
+  private async readFile(): Promise<SettingsFile> {
     try {
       const value = JSON.parse(await readFile(this.path, "utf8"));
-      return value && typeof value === "object" ? (value as { template?: string; markInProgress?: boolean; showClosed?: boolean }) : {};
+      return value && typeof value === "object" ? (value as SettingsFile) : {};
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
       throw new Error("Could not read the saved plugin settings.");
     }
   }
 
-  async read(): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+  async read(): Promise<PluginSettings> {
     const value = await this.readFile();
+    const launchPreferences = normalizeLaunchPreferences(value.launchPreferences);
+    const lastProvider = savedString(value.lastProvider);
     return {
       template: typeof value.template === "string" && value.template.trim() ? value.template : null,
       markInProgress: value.markInProgress === true,
       showClosed: value.showClosed === true,
+      lastProvider: lastProvider && launchPreferences[lastProvider] ? lastProvider : null,
+      launchPreferences,
     };
   }
 
-  async save(raw: string): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+  async save(raw: string): Promise<PluginSettings> {
     const current = await this.read();
-    return this.write({ template: normalizeTemplate(raw), markInProgress: current.markInProgress, showClosed: current.showClosed });
+    return this.write({ ...current, template: normalizeTemplate(raw) });
   }
 
   // Patches only the provided fields; `template: ""` clears the template (built-in default).
-  async patch(patch: { template?: string; markInProgress?: boolean; showClosed?: boolean }): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
+  async patch(patch: { template?: string; markInProgress?: boolean; showClosed?: boolean; launchPreference?: { provider: string } & LaunchPreference }): Promise<PluginSettings> {
     const current = await this.read();
     const template = patch.template === undefined ? current.template : normalizeTemplate(patch.template);
     const markInProgress = patch.markInProgress === undefined ? current.markInProgress : patch.markInProgress;
     const showClosed = patch.showClosed === undefined ? current.showClosed : patch.showClosed;
-    return this.write({ template, markInProgress, showClosed });
+    if (!patch.launchPreference) return this.write({ ...current, template, markInProgress, showClosed });
+    const { provider, model, modeId, thinkingOptionId } = patch.launchPreference;
+    return this.write({
+      template, markInProgress, showClosed, lastProvider: provider,
+      launchPreferences: {
+        ...current.launchPreferences,
+        [provider]: { model, ...(modeId ? { modeId } : {}), ...(thinkingOptionId ? { thinkingOptionId } : {}) },
+      },
+    });
   }
 
-  private async write(value: { template: string | null; markInProgress: boolean; showClosed: boolean }): Promise<{ template: string | null; markInProgress: boolean; showClosed: boolean }> {
-    if (!value.template && !value.markInProgress && !value.showClosed) {
+  private async write(value: PluginSettings): Promise<PluginSettings> {
+    if (!value.template && !value.markInProgress && !value.showClosed && !value.lastProvider) {
       await rm(this.path, { force: true });
       return value;
     }
     const directory = dirname(this.path);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await chmod(directory, 0o700);
-    const fileValue: { template?: string; markInProgress?: boolean; showClosed?: boolean } = {};
+    const fileValue: SettingsFile = {};
     if (value.template) fileValue.template = value.template;
     if (value.markInProgress) fileValue.markInProgress = true;
     if (value.showClosed) fileValue.showClosed = true;
+    if (value.lastProvider) fileValue.lastProvider = value.lastProvider;
+    if (Object.keys(value.launchPreferences).length) fileValue.launchPreferences = value.launchPreferences;
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, JSON.stringify(fileValue), { mode: 0o600, flag: "wx" });

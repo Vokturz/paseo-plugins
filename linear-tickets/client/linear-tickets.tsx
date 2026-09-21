@@ -12,6 +12,7 @@ import { BrandMark, Button, Callout, Divider, EmptyState, FieldLabel, LabelChip,
 import { tokensFor } from "./design";
 import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
+import { restoreLaunchSelection, type LaunchPreference } from "./launch-preferences";
 
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
 type ModelChoice = { id: string; label: string; provider: string; description?: string; thinkingOptions: ThinkingOption[]; defaultThinkingOptionId?: string };
@@ -74,6 +75,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [provider, setProvider] = useState("");
   const [modeId, setModeId] = useState("");
   const [thinkingOptionId, setThinkingOptionId] = useState("");
+  const [launchPreferences, setLaunchPreferences] = useState<Record<string, LaunchPreference>>({});
+  const [lastProvider, setLastProvider] = useState<string | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
@@ -87,6 +91,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [linkedAgents, setLinkedAgents] = useState<LinkedAgent[]>([]);
   const [linkedAgentsLoading, setLinkedAgentsLoading] = useState(false);
   const launchRequest = useRef<{ fingerprint: string; id: string } | null>(null);
+  const restoredLaunchPreference = useRef(false);
   const statusRef = useRef<string | null>(null);
 
   const run = async (label: string, task: () => Promise<void>) => {
@@ -182,7 +187,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   }, [getTemplate]);
 
   useEffect(() => {
-    void getSettings({}).then((value) => { setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed); }, () => {});
+    void getSettings({}).then((value) => {
+      setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed);
+      setLaunchPreferences(value.launchPreferences); setLastProvider(value.lastProvider);
+    }, () => {}).finally(() => setSettingsLoaded(true));
   }, [getSettings]);
 
   useEffect(() => {
@@ -263,6 +271,15 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const selectedModel = models.find((model) => model.id === provider);
   const activeModes = modes[providerGroup] ?? [];
   const thinkingOptions = selectedModel?.thinkingOptions ?? [];
+  const selectProvider = useCallback((group: string) => {
+    const restored = restoreLaunchSelection(group, launchPreferences[group], models, modes);
+    setProviderGroup(group); setProvider(restored.model); setModeId(restored.modeId); setThinkingOptionId(restored.thinkingOptionId);
+  }, [launchPreferences, models, modes]);
+  useEffect(() => {
+    if (restoredLaunchPreference.current || !settingsLoaded || optionsLoading || !models.length) return;
+    restoredLaunchPreference.current = true;
+    if (lastProvider && models.some((model) => model.provider === lastProvider)) selectProvider(lastProvider);
+  }, [lastProvider, models, optionsLoading, selectProvider, settingsLoaded]);
   useEffect(() => {
     if (modeId && !activeModes.some((mode) => mode.id === modeId)) setModeId("");
   }, [activeModes, modeId]);
@@ -311,6 +328,12 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     if (launchRequest.current?.fingerprint !== fingerprint) launchRequest.current = { fingerprint, id: requestId() };
     const result = await start({ id: selected.id, projectId, baseBranch: project?.projectKind === "git" ? baseBranch : undefined, provider, modeId: modeId || undefined, thinkingOptionId: thinkingOptionId || undefined, instructions, markInProgress, requestId: launchRequest.current.id });
     setAgent(result);
+    const launchPreference = { model: provider, ...(modeId ? { modeId } : {}), ...(thinkingOptionId ? { thinkingOptionId } : {}) };
+    setLaunchPreferences((previous) => ({ ...previous, [providerGroup]: launchPreference }));
+    setLastProvider(providerGroup);
+    void saveSettings({ launchPreference: { provider: providerGroup, ...launchPreference } }).catch(() => {
+      setOptionsError("Agent started, but its model choices could not be remembered.");
+    });
     setLinkedAgents((previous) => previous.some((item) => item.id === result.agentId) ? previous : [{ id: result.agentId, title: `${selected.identifier}: ${selected.title}`, status: "initializing", updatedAt: new Date().toISOString() }, ...previous]);
   });
   const copyContext = () => {
@@ -570,7 +593,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <FieldLabel title="Provider" icon="Bot" hint={`${models.length} model${models.length === 1 ? "" : "s"} available`} t={t} />
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {providerGroups.map((group) => <Button key={group} leading={<ProviderMark provider={group} theme={theme} size={15} />} title={`${group} · ${models.filter((model) => model.provider === group).length}`} chosen={providerGroup === group}
-                onPress={() => { if (group !== providerGroup) { setProviderGroup(group); setProvider(""); setModeId(""); setThinkingOptionId(""); } }} />)}
+                onPress={() => { if (group !== providerGroup) selectProvider(group); }} />)}
             </View>
             {optionsLoading && <View style={{ gap: 9 }}><Skeleton t={t} width="40%" height={12} /><Skeleton t={t} width="100%" height={48} radius={10} /></View>}
             {!optionsLoading && !models.length && <Callout t={t} tone="info" message="Configure an agent provider in Paseo, then reload the choices." />}

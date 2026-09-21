@@ -237,14 +237,14 @@ test("settings persist the template with private permissions and reset removes i
   const path = join(directory, "settings.json");
   try {
     const settings = new Settings(path);
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
     const saved = await settings.save("Handle {{ticket}}\n{{context}}");
     assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await settings.read(), saved);
-    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false });
+    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
     await assert.rejects(readFile(path), { code: "ENOENT" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -254,18 +254,36 @@ test("the mark-in-progress setting round-trips without disturbing the saved temp
   try {
     const settings = new Settings(path);
     await settings.patch({ markInProgress: true });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {} });
     await settings.save("Handle {{ticket}}\n{{context}}");
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {} });
     // The closed-states setting round-trips the same way and never disturbs the other fields.
     await settings.patch({ showClosed: true });
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {} });
     // Clearing the template keeps the flags; clearing the last flag with no template removes the file.
     await settings.patch({ template: "" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {} });
     await settings.patch({ markInProgress: false, showClosed: false });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
     await assert.rejects(readFile(path), { code: "ENOENT" });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("settings remember the last successful launch choices per provider", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-linear-settings-launch-"));
+  const path = join(directory, "settings.json");
+  try {
+    const settings = new Settings(path);
+    await settings.patch({ launchPreference: { provider: "codex", model: "codex/gpt-5", modeId: "code", thinkingOptionId: "high" } });
+    await settings.patch({ launchPreference: { provider: "claude", model: "claude/sonnet" } });
+    assert.deepEqual(await settings.read(), {
+      template: null, markInProgress: false, showClosed: false, lastProvider: "claude",
+      launchPreferences: {
+        codex: { model: "codex/gpt-5", modeId: "code", thinkingOptionId: "high" },
+        claude: { model: "claude/sonnet" },
+      },
+    });
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

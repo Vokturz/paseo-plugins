@@ -131,13 +131,32 @@ export const setDefaultPromptRpc = defineRpc({
 
 // One settings contract for the whole plugin; the default-prompt RPCs above keep working
 // for compatibility.
+export const launchPreferenceSchema = z.object({
+  model: z.string().min(1).max(500),
+  modeId: z.string().min(1).max(500).optional(),
+  thinkingOptionId: z.string().min(1).max(500).optional(),
+});
+const launchPreferencesSchema = z.record(z.string(), launchPreferenceSchema);
+const settingsOutputSchema = z.object({
+  template: z.string().nullable(),
+  builtin: z.string(),
+  markInProgress: z.boolean(),
+  showClosed: z.boolean(),
+  lastProvider: z.string().nullable(),
+  launchPreferences: launchPreferencesSchema,
+});
 export const getSettingsRpc = defineRpc({
   name: "linear.get-settings",
   input: z.object({}),
-  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean(), showClosed: z.boolean() }),
+  output: settingsOutputSchema,
 });
 export const setSettingsRpc = defineRpc({
   name: "linear.set-settings",
-  input: z.object({ template: z.string().max(8000).optional(), markInProgress: z.boolean().optional(), showClosed: z.boolean().optional() }),
-  output: z.object({ template: z.string().nullable(), builtin: z.string(), markInProgress: z.boolean(), showClosed: z.boolean() }),
+  input: z.object({
+    template: z.string().max(8000).optional(),
+    markInProgress: z.boolean().optional(),
+    showClosed: z.boolean().optional(),
+    launchPreference: launchPreferenceSchema.extend({ provider: z.string().min(1).max(500) }).optional(),
+  }),
+  output: settingsOutputSchema,
 });

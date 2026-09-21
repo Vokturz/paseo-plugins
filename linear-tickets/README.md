@@ -49,6 +49,11 @@ paseo plugin reload linear-tickets
    provider's change mode and the model's reasoning level, then optionally add instructions.
 4. Select **Start agent with ticket**, then **Open agent**.
 
+After an agent starts successfully, the plugin remembers that provider's model, change
+mode, and reasoning level on this host. The most recently used provider is restored the
+next time the launcher opens, and switching providers restores each provider's own choices.
+Choices that are no longer advertised by Paseo are safely ignored.
+
 Tickets load in pages of 50. By default they cover **open work only** — completed,
 canceled and duplicated states are hidden server-side; the **Settings** menu (gear in
 the header) has a toggle to include them. The status chips show counts over exactly
@@ -130,6 +135,9 @@ buttons) holds the plugin's per-host settings:
 - **Tickets shown** — include completed, canceled and duplicated tickets in the list
   and the status counts (off by default, keeping the list focused on open work).
 - **Default prompt** — replace the built-in launch prompt with a template (below).
+
+The last successful model, mode, and reasoning choices are stored in the same per-host
+settings file. They update automatically and do not need a separate settings toggle.
 
 ## Customizing the launch prompt
 
