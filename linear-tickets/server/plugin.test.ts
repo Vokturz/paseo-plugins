@@ -11,7 +11,7 @@ import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
 import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, TEAM_STATES_QUERY, UPDATE_ISSUE_STATE_QUERY, resolveStartedState, listIssueFilter, type Post, type TeamState } from "./linear";
-import { countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
+import { cachedOverviewRpc, countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
 // and the relationship fields the detail query requests.
@@ -41,7 +41,7 @@ const noMark = { markInProgress: async () => ({ changed: false }) };
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.get-settings", "linear.set-settings", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.cached-overview", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.get-settings", "linear.set-settings", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -389,6 +389,8 @@ test("list and count RPC contracts validate their inputs and outputs", () => {
   assert.equal(countIssuesRpc.input.safeParse({}).success, true);
   assert.equal(countIssuesRpc.output.safeParse({ total: 3, byName: { a: 3 }, byType: { backlog: 3 }, complete: true }).success, true);
   assert.equal(countIssuesRpc.output.safeParse({ total: -1, byName: {}, byType: {}, complete: true }).success, false);
+  assert.equal(cachedOverviewRpc.output.safeParse({ issues: [normalizeIssue(rawIssue)], nextCursor: null, updatedAt: "2026-09-21T10:00:00Z" }).success, true);
+  assert.equal(cachedOverviewRpc.output.safeParse({ issues: [], nextCursor: null }).success, false);
   assert.equal(searchIssuesRpc.input.safeParse({ term: "ab" }).success, true);
   assert.equal(searchIssuesRpc.input.safeParse({ term: "a" }).success, false);
   assert.equal(searchIssuesRpc.input.safeParse({ term: "x".repeat(201) }).success, false);
