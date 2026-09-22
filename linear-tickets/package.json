@@ -1,6 +1,6 @@
 {
   "name": "paseo-linear-tickets",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Paseo sidebar plugin that lists your assigned Linear tickets and starts an agent with the ticket context, comments and relationships.",
   "license": "MIT",
   "repository": {
