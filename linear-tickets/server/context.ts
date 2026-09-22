@@ -1,4 +1,4 @@
-import type { Issue, TicketDetail } from "../shared/contracts";
+import type { Issue, RelatedTicket, TicketDetail, TicketRelations } from "../shared/contracts";
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Linear returned an unexpected response.");
@@ -24,6 +24,7 @@ export function normalizeIssue(value: unknown): Issue {
   const state = issue.state && typeof issue.state === "object" && !Array.isArray(issue.state) ? issue.state as Record<string, unknown> : undefined;
   const dueDate = typeof issue.dueDate === "string" && issue.dueDate ? issue.dueDate : null;
   const estimate = typeof issue.estimate === "number" && Number.isFinite(issue.estimate) ? issue.estimate : null;
+  const dependencies = relationshipEntries(issue);
   return {
     id: issue.id,
     identifier: label(issue.identifier) || issue.id,
@@ -41,6 +42,8 @@ export function normalizeIssue(value: unknown): Issue {
     labels: labels.map(label).filter(Boolean),
     updatedAt: label(issue.updatedAt),
     createdAt: label(issue.createdAt),
+    blockingCount: dependencies.filter((relation) => relation.direction === "blocks").length,
+    blockedByCount: dependencies.filter((relation) => relation.direction === "blocked by").length,
   };
 }
 
@@ -71,20 +74,21 @@ export function issuePage(data: unknown) {
 // A raw dump of both lists is confusing (the same link appears twice), so normalize
 // into directed statements before they reach the prompt.
 const FORWARD_RELATION_LABELS: Record<string, string> = { blocks: "blocks", duplicate: "duplicates", related: "related to" };
-const INVERSE_RELATION_LABELS: Record<string, string> = { blocks: "blocked by", duplicated: "duplicated by", related: "related to" };
+const INVERSE_RELATION_LABELS: Record<string, string> = { blocks: "blocked by", duplicate: "duplicated by", duplicated: "duplicated by", related: "related to" };
 
 export type Relationship = { direction: string; identifier: string; title: string; url?: string };
+type RelationshipEntry = Relationship & { id: string; status: string; statusType: string; assignee: string; assignedToViewer: boolean };
 
-type RelationReference = { id?: unknown; identifier?: unknown; title?: unknown; url?: unknown };
+type RelationReference = { id?: unknown; identifier?: unknown; title?: unknown; url?: unknown; state?: unknown; assignee?: unknown; name?: unknown; type?: unknown };
 
 function relationReference(value: unknown): RelationReference | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as RelationReference : null;
 }
 
-export function relationships(issueData: unknown): Relationship[] {
+function relationshipEntries(issueData: unknown, viewerId = ""): RelationshipEntry[] {
   const issue = issueData && typeof issueData === "object" && !Array.isArray(issueData) ? issueData as Record<string, unknown> : {};
   if (typeof issue.id !== "string" || !issue.id) return [];
-  const out: Relationship[] = [];
+  const out: RelationshipEntry[] = [];
   const seen = new Set<string>();
   for (const list of ["relations", "inverseRelations"] as const) {
     const value = issue[list];
@@ -111,13 +115,55 @@ export function relationships(issueData: unknown): Relationship[] {
       const identifier = typeof other.identifier === "string" && other.identifier ? other.identifier : other.id;
       const title = typeof other.title === "string" ? other.title : "";
       const url = typeof other.url === "string" && other.url ? other.url : undefined;
+      const state = relationReference(other.state);
+      const assignee = relationReference(other.assignee);
       const key = `${direction}:${other.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(url ? { direction, identifier, title, url } : { direction, identifier, title });
+      out.push({
+        id: other.id, direction, identifier, title, ...(url ? { url } : {}),
+        status: label(state?.name), statusType: label(state?.type), assignee: label(assignee?.name),
+        assignedToViewer: Boolean(viewerId && label(assignee?.id) === viewerId),
+      });
     }
   }
   return out;
+}
+
+export function relationships(issueData: unknown): Relationship[] {
+  return relationshipEntries(issueData).map(({ id: _id, status: _status, statusType: _statusType, assignee: _assignee, assignedToViewer: _assigned, ...relationship }) => relationship);
+}
+
+function relatedTicket(value: unknown, viewerId: string): RelatedTicket | null {
+  const item = relationReference(value);
+  if (!item || typeof item.id !== "string" || !item.id) return null;
+  const state = relationReference(item.state);
+  const assignee = relationReference(item.assignee);
+  return {
+    id: item.id,
+    identifier: label(item.identifier) || item.id,
+    title: label(item.title),
+    url: label(item.url),
+    status: label(state?.name),
+    statusType: label(state?.type),
+    assignee: label(assignee?.name),
+    assignedToViewer: Boolean(viewerId && label(assignee?.id) === viewerId),
+  };
+}
+
+export function ticketRelations(issueData: unknown, viewerId = ""): TicketRelations {
+  const issue = issueData && typeof issueData === "object" && !Array.isArray(issueData) ? issueData as Record<string, unknown> : {};
+  const parent = relatedTicket(issue.parent, viewerId);
+  const children = issue.children && typeof issue.children === "object" && !Array.isArray(issue.children)
+    ? (issue.children as { nodes?: unknown }).nodes : undefined;
+  const subissues = Array.isArray(children) ? children.flatMap((child) => {
+    const normalized = relatedTicket(child, viewerId);
+    return normalized ? [normalized] : [];
+  }) : [];
+  const related = relationshipEntries(issue, viewerId).map(({ id, direction, identifier, title, url = "", status, statusType, assignee, assignedToViewer }) => ({
+    id, direction, identifier, title, url, status, statusType, assignee, assignedToViewer,
+  }));
+  return { parent, subissues, related };
 }
 
 function relationshipBlock(issueData: unknown): string {

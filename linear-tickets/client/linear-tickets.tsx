@@ -3,12 +3,12 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type TicketDetail } from "../shared/contracts";
-import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, issueStatus, statusChangesText, statusCounts, type SortDirection, type SortField } from "./issue-list";
+import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type RelatedTicket, type TicketDetail } from "../shared/contracts";
+import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, issueStatus, statusChangesText, statusCounts, type DependencyFilter, type SortDirection, type SortField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
 import { Icon, copyText } from "@getpaseo/plugin/client/react-native";
-import { BrandMark, Button, Callout, Divider, EmptyState, FieldLabel, LabelChip, MetaItem, PriorityMark, ProviderMark, SectionHeading, Segmented, Skeleton, StatusBadge, SurfaceProvider, statusAccent } from "./ui";
+import { BrandMark, Button, Callout, Divider, EmptyState, FieldLabel, LabelChip, MetaItem, PriorityMark, ProviderMark, SectionHeading, Segmented, Skeleton, StatusBadge, StatusMark, SurfaceProvider } from "./ui";
 import { tokensFor } from "./design";
 import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
@@ -52,6 +52,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [searchVersion, setSearchVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [dependency, setDependency] = useState<DependencyFilter>("all");
   const [showClosed, setShowClosed] = useState(false);
   const [dateField, setDateField] = useState<SortField>("updatedAt");
   const [dateDirection, setDateDirection] = useState<SortDirection>("newest");
@@ -82,6 +83,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const [showContext, setShowContext] = useState(false);
+  const [showRelatedTickets, setShowRelatedTickets] = useState(false);
   const [contextCopied, setContextCopied] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -93,6 +95,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const launchRequest = useRef<{ fingerprint: string; id: string } | null>(null);
   const restoredLaunchPreference = useRef(false);
   const statusRef = useRef<string | null>(null);
+  const dependencyRef = useRef<DependencyFilter>("all");
 
   const run = async (label: string, task: () => Promise<void>) => {
     if (busyRef.current) return;
@@ -101,11 +104,12 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     finally { busyRef.current = false; setBusy(null); }
   };
 
-  const loadIssues = useCallback(async (next?: string, filter?: { status: string | null }) => {
-    const f = filter ?? { status: statusRef.current };
+  const loadIssues = useCallback(async (next?: string, filter?: { status: string | null; dependency?: DependencyFilter }) => {
+    const f = filter ?? { status: statusRef.current, dependency: dependencyRef.current };
     const page = await getIssues({
       ...(next ? { cursor: next } : {}),
       ...(f.status ? { stateNames: [f.status] } : {}),
+      ...(f.dependency && f.dependency !== "all" ? { relation: f.dependency } : {}),
     });
     if (next && page.nextCursor === next) throw new Error("Linear repeated a page. Refresh the ticket list to continue.");
     setIssues((previous) => [...new Map((next ? [...previous, ...page.issues] : page.issues).map((issue) => [issue.id, issue])).values()]);
@@ -195,7 +199,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
   useEffect(() => {
     let cancelled = false;
-    setDetail(null); setDetailError(null); setShowContext(false); setContextCopied(false);
+    setDetail(null); setDetailError(null); setShowContext(false); setShowRelatedTickets(false); setContextCopied(false);
     if (!selected) { setDetailLoading(false); return; }
     setDetailLoading(true);
     void getDetail({ id: selected.id }).then((value) => {
@@ -295,7 +299,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const t = useMemo(() => tokensFor(theme, layout), [theme, layout]);
   const colors = t.colors;
 
-  const visible = filterIssues(issues, query, status, dateField, dateDirection);
+  const visible = filterIssues(issues, query, status, dateField, dateDirection, dependency);
   const searchTerm = query.trim();
   const loadedIds = useMemo(() => new Set(issues.map((issue) => issue.id)), [issues]);
   const remoteVisible = searchResults.filter((issue) => !loadedIds.has(issue.id));
@@ -310,6 +314,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   if (status && !statuses.some(([name]) => name === status)) statuses.push([status, counts?.byName[status] ?? 0]);
   const ticketsLoading = busy === "Loading connection" || busy === "Refreshing tickets" || busy === "Loading tickets" || busy === "Loading all tickets";
   const current = detail?.issue ?? selected;
+  const relatedTickets = detail ? [
+    ...(detail.relations.parent ? [{ ...detail.relations.parent, relationLabel: "Parent" }] : []),
+    ...detail.relations.subissues.map((ticket) => ({ ...ticket, relationLabel: "Subissue" })),
+    ...detail.relations.related.map((ticket) => ({ ...ticket, relationLabel: ticket.direction })),
+  ] : [];
   const missingRequirement = !project ? "Choose a project"
     : project.projectKind === "git" && !baseBranch ? "Choose a base branch"
       : !provider ? "Choose a model"
@@ -317,11 +326,21 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           : !detail ? "Loading ticket details…" : "";
   const changeStatus = (name: string | null) => {
     statusRef.current = name; setStatus(name); setIssues([]); setCursor(null);
-    void run("Loading tickets", async () => { await loadIssues(undefined, { status: name }); });
+    void run("Loading tickets", async () => { await loadIssues(undefined, { status: name, dependency: dependencyRef.current }); });
+  };
+  const changeDependency = (value: DependencyFilter) => {
+    dependencyRef.current = value; setDependency(value); setIssues([]); setCursor(null);
+    void run("Loading tickets", async () => { await loadIssues(undefined, { status: statusRef.current, dependency: value }); });
   };
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
   };
+  const chooseRelated = (ticket: RelatedTicket) => choose({
+    id: ticket.id, identifier: ticket.identifier, title: ticket.title, url: ticket.url,
+    status: ticket.status, statusType: ticket.statusType, branchName: "", priority: "",
+    dueDate: null, estimate: null, project: "", description: "", team: "", labels: [],
+    updatedAt: "", createdAt: "", blockingCount: 0, blockedByCount: 0,
+  });
   const launch = () => void run("Starting agent", async () => {
     if (!selected || !canLaunch) return;
     const fingerprint = JSON.stringify([selected.id, projectId, baseBranch, provider, modeId, thinkingOptionId, instructions, markInProgress]);
@@ -352,20 +371,23 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     const places = [issue.project, issue.team].filter(Boolean).join(" · ");
     const due = issue.dueDate ? `Due ${formatIssueDate(issue.dueDate)}` : "";
     const estimate = issue.estimate ? `${issue.estimate} pts` : "";
-    if (!places && !chips.length && !extra && !due && !estimate) return null;
+    const dependencies = [issue.blockingCount ? `Blocks ${issue.blockingCount}` : "", issue.blockedByCount ? `Blocked by ${issue.blockedByCount}` : ""].filter(Boolean);
+    if (!places && !chips.length && !extra && !due && !estimate && !dependencies.length) return null;
     return <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
       {!!places && <Text numberOfLines={1} style={t.muted}>{places}</Text>}
       {chips.map((label) => <LabelChip key={label} label={label} t={t} />)}
       {extra > 0 && <Text style={t.muted}>+{extra}</Text>}
       {due && <Text style={{ ...t.muted, color: colors.accent, fontSize: 11 }}>{due}</Text>}
       {estimate && <Text style={{ ...t.muted, fontSize: 11 }}>{estimate}</Text>}
+      {dependencies.map((item) => <View key={item} style={{ backgroundColor: colors.surface2, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 3 }}><Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>{item}</Text></View>)}
     </View>;
   };
 
   const renderIssueRow = (issue: Issue, index: number) => {
     const isHovered = hovered === issue.id;
     const rightText = dateField === "priority" ? (hasPriority(issue.priority) ? formatPriority(issue.priority) : "—") : formatRelativeDate(issue[dateField] ?? "");
-    return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${rightText}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
+    const dependencyText = [issue.blockingCount ? `blocks ${issue.blockingCount}` : "", issue.blockedByCount ? `blocked by ${issue.blockedByCount}` : ""].filter(Boolean).join(", ");
+    return <Pressable key={issue.id} accessibilityRole="button" accessibilityLabel={`View ${issue.identifier}: ${issue.title}, ${issueStatus(issue)}, ${rightText}${dependencyText ? `, ${dependencyText}` : ""}`} disabled={Boolean(busy)} onPress={() => choose(issue)}
       onHoverIn={() => setHovered(issue.id)} onHoverOut={() => setHovered(null)}
       style={({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: layout.compact ? 14 : 15, borderTopWidth: index ? 1 : 0, borderTopColor: colors.surface2, backgroundColor: pressed || isHovered ? colors.surface2 : colors.surface1, gap: 8 })}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 14, flexWrap: layout.compact ? "wrap" : "nowrap" }}>
@@ -500,7 +522,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
       {view === "settings" ? settingsCard : selected && current ? <>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-          <Button title="Assigned tickets" icon="ArrowLeft" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
+          <Button title="Tickets" icon="ArrowLeft" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
           {/^https:\/\/linear\.app\//.test(selected.url) && <Button title="Open in Linear" icon="ExternalLink" onPress={() => void run("Opening Linear", async () => { await openExternalUrl(selected.url, { platform: layout.platform, linking: Linking }); })} />}
         </View>
         <View style={{ flexDirection: layout.compact ? "column" : "row", alignItems: "flex-start", gap: 20 }}>
@@ -530,6 +552,22 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             {detail && statusChangesText(detail.context) && <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Icon name="History" size={13} color={colors.foregroundMuted} />
               <Text style={{ ...t.muted, fontSize: 12 }}>Status history: {statusChangesText(detail.context)}</Text>
+            </View>}
+
+            {!!relatedTickets.length && <View style={{ gap: 10 }}>
+              <Button title={`${showRelatedTickets ? "Hide" : "Show"} related tickets · ${relatedTickets.length}`} icon={showRelatedTickets ? "ChevronUp" : "ChevronDown"} chosen={showRelatedTickets} stretch onPress={() => setShowRelatedTickets(!showRelatedTickets)} />
+              {showRelatedTickets && <View style={{ gap: 8 }}>
+                <FieldLabel title="Related tickets" icon="GitBranch" hint="your assigned tickets are highlighted" t={t} />
+                {relatedTickets.map((ticket) => <Pressable key={`${ticket.relationLabel}:${ticket.id}`} accessibilityRole="button" accessibilityLabel={`View ${ticket.relationLabel} ticket ${ticket.identifier}: ${ticket.title}${ticket.assignedToViewer ? ", assigned to you" : ""}`} onPress={() => chooseRelated(ticket)}
+                style={({ pressed }) => ({ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, borderWidth: ticket.assignedToViewer ? 2 : 1, borderColor: ticket.assignedToViewer ? colors.accent : colors.border, borderRadius: 10, padding: 10, backgroundColor: pressed || ticket.assignedToViewer ? colors.surface2 : colors.surface0 })}>
+                  <Text style={{ ...t.eyebrow, color: colors.accent, width: 76, textTransform: "capitalize" }}>{ticket.relationLabel}</Text>
+                  <Text style={{ ...t.mono, color: colors.accent }}>{ticket.identifier}</Text>
+                  <Text numberOfLines={1} style={{ ...t.strong, flex: 1, minWidth: 140 }}>{ticket.title}</Text>
+                  <Text style={{ ...t.muted, color: ticket.assignedToViewer ? colors.accent : colors.foregroundMuted, fontWeight: ticket.assignedToViewer ? "700" : "400" }}>{ticket.assignedToViewer ? "Assigned to you" : ticket.assignee || "Unassigned"}</Text>
+                  {!!ticket.status && <StatusBadge status={ticket.status} statusType={ticket.statusType} t={t} />}
+                  <Icon name="ChevronRight" size={14} color={colors.foregroundMuted} />
+                </Pressable>)}
+              </View>}
             </View>}
 
             {(linkedAgentsLoading || linkedAgents.length > 0) && <View style={{ gap: 8 }}>
@@ -645,8 +683,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <FieldLabel title="Status" icon="ListFilter" t={t} />
             <Button size="sm" title={`All · ${counts ? (counts.complete ? counts.total : `${counts.total}+`) : issues.length}`} chosen={status === null} onPress={() => changeStatus(null)} />
-            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: statusAccent(name, statusTypeFor(name), t) }} />}
+            {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<StatusMark status={name} statusType={statusTypeFor(name)} t={t} />}
               onPress={() => changeStatus(status === name ? null : name)} />)}
+          </View>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+            <FieldLabel title="Dependencies" icon="GitBranch" t={t} />
+            <Button size="sm" title="All" chosen={dependency === "all"} onPress={() => changeDependency("all")} />
+            <Button size="sm" title="Blocking others" icon="Flag" chosen={dependency === "blocking"} onPress={() => changeDependency(dependency === "blocking" ? "all" : "blocking")} />
+            <Button size="sm" title="Blocked" icon="Lock" chosen={dependency === "blocked"} onPress={() => changeDependency(dependency === "blocked" ? "all" : "blocked")} />
           </View>
           <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
             <FieldLabel title="Sort" icon="ArrowDownUp" t={t} />
@@ -654,7 +698,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               options={[{ value: "updatedAt" as SortField, label: "Updated", icon: "Clock" }, { value: "createdAt" as SortField, label: "Created", icon: "Calendar" }, { value: "dueDate" as SortField, label: "Due", icon: "CalendarClock" }, { value: "priority" as SortField, label: "Priority", icon: "Flag" }]} />
             <Segmented t={t} label="Sort direction" value={dateDirection} onChange={(value) => setDateDirection(value)}
               options={[{ value: "newest" as SortDirection, label: dateField === "dueDate" ? "Latest" : dateField === "priority" ? "Highest" : "Newest", icon: "ArrowDown" }, { value: "oldest" as SortDirection, label: dateField === "dueDate" ? "Soonest" : dateField === "priority" ? "Lowest" : "Oldest", icon: "ArrowUp" }]} />
-            {!!(status || query) && <Button size="sm" title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} />}
+            {!!(status || query || dependency !== "all") && <Button size="sm" title="Clear filters" icon="X" onPress={() => { dependencyRef.current = "all"; setDependency("all"); changeStatus(null); setQuery(""); }} />}
           </View>
         </View>
 
@@ -665,7 +709,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
         {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
           description={issues.length ? "Try another status or a different search term." : showClosed ? "Assigned tickets will appear here as soon as Linear has them." : "No open tickets are assigned to you right now. Enable the closed-states setting to also see finished work."}
-          action={!!(status || query) ? <Button title="Clear filters" icon="X" onPress={() => { changeStatus(null); setQuery(""); }} /> : undefined} />}
+          action={!!(status || query || dependency !== "all") ? <Button title="Clear filters" icon="X" onPress={() => { dependencyRef.current = "all"; setDependency("all"); changeStatus(null); setQuery(""); }} /> : undefined} />}
 
         {(!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
           {!layout.compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 11, backgroundColor: colors.surface2 }}>

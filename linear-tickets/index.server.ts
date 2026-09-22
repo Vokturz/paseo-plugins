@@ -21,10 +21,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(statusRpc, () => linear.status());
   server.handle(connectRpc, ({ apiKey }) => linear.authenticate(apiKey));
   server.handle(disconnectRpc, () => linear.disconnect());
-  server.handle(listIssuesRpc, async ({ cursor, stateNames }) => {
+  server.handle(listIssuesRpc, async ({ cursor, stateNames, relation }) => {
     const showClosed = (await settings.read()).showClosed;
-    const page = await linear.issues(cursor, stateNames, showClosed);
-    if (!cursor && !stateNames?.length) {
+    const page = await linear.issues(cursor, stateNames, showClosed, relation);
+    if (!cursor && !stateNames?.length && !relation) {
       const scope = await cacheIdentity();
       if (scope) await cache.saveIssues(scope, showClosed, page);
     }

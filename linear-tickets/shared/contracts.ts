@@ -29,10 +29,37 @@ export const issueSchema = z.object({
   labels: z.array(z.string()),
   updatedAt: z.string(),
   createdAt: z.string().default(""),
+  blockingCount: z.number().int().nonnegative().default(0),
+  blockedByCount: z.number().int().nonnegative().default(0),
 });
 export type Issue = z.infer<typeof issueSchema>;
 
-export const detailSchema = z.object({ issue: issueSchema, teamId: z.string().nullable().default(null), context: z.string(), warnings: z.array(z.string()) });
+export const relatedTicketSchema = z.object({
+  id: z.string().min(1),
+  identifier: z.string(),
+  title: z.string(),
+  url: z.string().default(""),
+  status: z.string().default(""),
+  statusType: z.string().default(""),
+  assignee: z.string().default(""),
+  assignedToViewer: z.boolean().default(false),
+});
+export type RelatedTicket = z.infer<typeof relatedTicketSchema>;
+
+export const ticketRelationsSchema = z.object({
+  parent: relatedTicketSchema.nullable(),
+  subissues: z.array(relatedTicketSchema),
+  related: z.array(relatedTicketSchema.extend({ direction: z.string() })),
+});
+export type TicketRelations = z.infer<typeof ticketRelationsSchema>;
+
+export const detailSchema = z.object({
+  issue: issueSchema,
+  teamId: z.string().nullable().default(null),
+  context: z.string(),
+  warnings: z.array(z.string()),
+  relations: ticketRelationsSchema.default({ parent: null, subissues: [], related: [] }),
+});
 export type TicketDetail = z.infer<typeof detailSchema>;
 const connectionSchema = z.object({ connected: z.boolean(), source: z.enum(["environment", "saved", "none"]) });
 export const statusRpc = defineRpc({ name: "linear.status", input: z.object({}), output: connectionSchema });
@@ -48,6 +75,7 @@ export const listIssuesRpc = defineRpc({
   input: z.object({
     cursor: z.string().optional(),
     stateNames: z.array(z.string()).max(12).optional(),
+    relation: z.enum(["blocking", "blocked"]).optional(),
   }),
   output: z.object({ issues: z.array(issueSchema), nextCursor: z.string().nullable() }),
 });
