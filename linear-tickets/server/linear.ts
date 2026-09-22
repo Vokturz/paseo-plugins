@@ -1,5 +1,5 @@
 import type { Issue, TicketDetail } from "../shared/contracts";
-import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans, label } from "./context";
+import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans, label, ticketRelations } from "./context";
 import { Credentials } from "./credentials";
 
 const endpoint = "https://api.linear.app/graphql";
@@ -73,6 +73,8 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String,
       project { name identifier url }
       team { name key }
       labels(first: 50) { nodes { id name } }
+      relations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
+      inverseRelations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
       createdAt
       updatedAt
     }
@@ -104,6 +106,8 @@ export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: I
       project { name identifier url }
       team { name key }
       labels(first: 50) { nodes { id name } }
+      relations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
+      inverseRelations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
       createdAt
       updatedAt
     }
@@ -115,17 +119,20 @@ export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: I
 // across caching, tests and request logging. An explicit state-name selection always
 // wins over the default scope: picking the Done chip means seeing Done tickets. When
 // closed states are not shown, completed, canceled and duplicated work is hidden.
-export function listIssueFilter(stateNames?: string[], showClosed?: boolean): Record<string, unknown> {
+export function listIssueFilter(stateNames?: string[], showClosed?: boolean, relation?: "blocking" | "blocked"): Record<string, unknown> {
   const filter: Record<string, unknown> = { assignee: { isMe: { eq: true } } };
   const state: Record<string, unknown> = {};
   const names = [...new Set((stateNames ?? []).map((name) => name.trim()).filter(Boolean))].sort();
   if (names.length) state.name = { in: names };
   else if (showClosed !== true) state.type = { nin: ["completed", "canceled", "duplicate"] };
   if (Object.keys(state).length) filter.state = state;
+  if (relation === "blocking") filter.hasBlockingRelations = { eq: true };
+  if (relation === "blocked") filter.hasBlockedByRelations = { eq: true };
   return filter;
 }
 
 export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
+  viewer { id }
   issue(id: $id) {
     id
     identifier
@@ -142,10 +149,10 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     labels(first: 50) { nodes { id name } }
     createdAt
     updatedAt
-    parent { id identifier title url }
-    children(first: 50) { nodes { id identifier title url } }
-    relations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
-    inverseRelations(first: 50) { nodes { type issue { id identifier title url } relatedIssue { id identifier title url } } }
+    parent { id identifier title url state { name type } assignee { id name } }
+    children(first: 50) { nodes { id identifier title url state { name type } assignee { id name } } }
+    relations(first: 50) { nodes { type issue { id identifier title url state { name type } assignee { id name } } relatedIssue { id identifier title url state { name type } assignee { id name } } } }
+    inverseRelations(first: 50) { nodes { type issue { id identifier title url state { name type } assignee { id name } } relatedIssue { id identifier title url state { name type } assignee { id name } } } }
     attachments(first: 50) { nodes { id title url } }
     documents(first: 50) { nodes { id title url } }
     stateHistory(first: 20) { nodes { state { name type } startedAt endedAt } }
@@ -216,9 +223,9 @@ export class LinearService {
     return work(key);
   }
 
-  async issues(cursor?: string, stateNames?: string[], showClosed?: boolean) {
+  async issues(cursor?: string, stateNames?: string[], showClosed?: boolean, relation?: "blocking" | "blocked") {
     return this.withKey(async (key) =>
-      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, showClosed) })).issues));
+      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, showClosed, relation) })).issues));
   }
 
   // Linear's GraphQL exposes no aggregation, so chip counts come from a bounded pass over
@@ -264,6 +271,7 @@ export class LinearService {
       }
       const issueData = record(data.issue);
       const issue = normalizeIssue(issueData);
+      const viewerId = data.viewer && typeof data.viewer === "object" ? label((data.viewer as { id?: unknown }).id) : "";
       const teamId = label(record(issueData.team ?? {}).id) || null;
       const warnings: string[] = [];
       let comments: unknown[] = [];
@@ -279,7 +287,7 @@ export class LinearService {
         comments = [];
         warnings.push("Comments could not be loaded; only the ticket details are included.");
       }
-      return { issue, teamId, warnings, context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
+      return { issue, teamId, warnings, relations: ticketRelations(issueData, viewerId), context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
     });
   }
 

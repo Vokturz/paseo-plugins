@@ -10,6 +10,7 @@ const issue: Issue = {
   id: "issue-1", identifier: "ENG-42", title: "Cached ticket", url: "https://linear.app/acme/issue/ENG-42/cached-ticket",
   status: "Todo", statusType: "unstarted", branchName: "", priority: "High", dueDate: null, estimate: null,
   project: "App", description: "", team: "Engineering", labels: [], updatedAt: "2026-09-21T10:00:00Z", createdAt: "2026-09-20T10:00:00Z",
+  blockingCount: 0, blockedByCount: 0,
 };
 
 test("persists the latest overview and merges counts without storing the API key", async () => {

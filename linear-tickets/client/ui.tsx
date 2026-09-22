@@ -4,7 +4,7 @@ import { Animated, Image, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { Tokens } from "./design";
-import { formatPriority, hasPriority, priorityTone, statusTone, type PriorityTone, type StatusTone } from "./issue-list";
+import { formatPriority, hasPriority, priorityTone, statusIcon, statusTone, type PriorityTone, type StatusIconKind, type StatusTone } from "./issue-list";
 import { providerPng } from "./provider-icons";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -31,19 +31,20 @@ export function Button(props: ActionButtonProps) {
 
 export function ActionButton({ title, icon, leading, onPress, t, primary = false, disabled = false, chosen = false, tone = "default", size = "md", iconOnly = false, stretch = false }: ActionButtonProps & { t: Tokens }) {
   const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
   const c = t.colors;
   const color = primary ? c.accentForeground : tone === "danger" ? c.statusDanger : chosen ? c.accent : c.foreground;
   const active = hovered || chosen;
   return <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, selected: chosen }} disabled={disabled} onPress={onPress}
-    onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+    onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)}
     style={({ pressed }) => ({
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
       alignSelf: stretch ? "stretch" : "flex-start", minHeight: size === "sm" ? 32 : 40,
       paddingHorizontal: iconOnly ? 0 : size === "sm" ? 10 : primary ? 16 : 12,
       width: iconOnly ? (size === "sm" ? 32 : 40) : undefined,
       borderRadius: t.radius.md, borderWidth: 1,
-      borderColor: focused || chosen || primary ? c.accent : c.border,
+      // Selection is the only persistent accent state. React Native Web can retain
+      // focus after another filter is pressed, which otherwise makes two chips look selected.
+      borderColor: chosen || primary ? c.accent : c.border,
       backgroundColor: primary ? c.accent : active || pressed ? c.surface2 : c.surface1,
       opacity: disabled ? 0.4 : pressed ? 0.75 : 1,
     })}>
@@ -93,24 +94,36 @@ export function Divider({ t, spaced = false }: { t: Tokens; spaced?: boolean }) 
   return <View style={{ ...t.divider, marginVertical: spaced ? 8 : 2 }} />;
 }
 
-const STATUS_TONES: Record<StatusTone, { icon: string; color: (t: Tokens) => string; dim?: boolean }> = {
-  done: { icon: "CircleCheck", color: (t) => t.colors.statusSuccess },
-  canceled: { icon: "CircleSlash", color: (t) => t.colors.foregroundMuted, dim: true },
-  active: { icon: "CircleDot", color: (t) => t.colors.statusWarning },
-  review: { icon: "ScanEye", color: (t) => t.colors.accent },
-  backlog: { icon: "CircleDashed", color: (t) => t.colors.foregroundMuted },
-  neutral: { icon: "Circle", color: (t) => t.colors.foregroundMuted, dim: true },
+const STATUS_TONES: Record<StatusTone, { color: (t: Tokens) => string; dim?: boolean }> = {
+  done: { color: (t) => t.colors.statusSuccess },
+  canceled: { color: (t) => t.colors.foregroundMuted, dim: true },
+  active: { color: (t) => t.colors.statusWarning },
+  review: { color: (t) => t.colors.accent },
+  backlog: { color: (t) => t.colors.foregroundMuted },
+  neutral: { color: (t) => t.colors.foregroundMuted, dim: true },
 };
+
+function StatusIcon({ kind, color }: { kind: StatusIconKind; color: string }) {
+  if (kind === "Circle") return <View style={{ width: 12, height: 12, borderRadius: 6, borderWidth: 1.5, borderColor: color }} />;
+  if (kind === "CircleFilled") return <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: color }} />;
+  return <Icon name={kind} size={12} color={color} />;
+}
+
+export function StatusMark({ status, statusType = "", t }: { status: string; statusType?: string; t: Tokens }) {
+  const tone = STATUS_TONES[statusTone(status, statusType)];
+  return <StatusIcon kind={statusIcon(status, statusType)} color={tone.color(t)} />;
+}
 
 export function StatusBadge({ status, statusType, t, compact = false }: { status: string; statusType?: string; t: Tokens; compact?: boolean }) {
   const tone = STATUS_TONES[statusTone(status, statusType ?? "")];
+  const icon = statusIcon(status, statusType ?? "");
   const color = tone.color(t);
   if (compact) return <View style={{ flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "100%" }}>
-    <Icon name={tone.icon} size={12} color={color} />
+    <StatusIcon kind={icon} color={color} />
     <Text numberOfLines={1} style={{ color, fontSize: 12, fontWeight: "600", flexShrink: 1, opacity: tone.dim ? 0.85 : 1 }}>{status || "No status"}</Text>
   </View>;
   return <View style={{ flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4, backgroundColor: t.colors.surface2, maxWidth: "100%" }}>
-    <Icon name={tone.icon} size={12} color={color} />
+    <StatusIcon kind={icon} color={color} />
     <Text numberOfLines={1} style={{ color, fontSize: 11, fontWeight: "600", flexShrink: 1, opacity: tone.dim ? 0.85 : 1 }}>{status || "No status"}</Text>
   </View>;
 }

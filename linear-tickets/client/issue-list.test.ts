@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeIssue } from "../server/context";
-import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, priorityTone, statusChangesText, statusCounts, statusTone } from "./issue-list";
+import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, priorityTone, statusChangesText, statusCounts, statusIcon, statusTone } from "./issue-list";
 
 const tickets = [
   normalizeIssue({ id: "a", title: "Fix login", status: "In Progress", labels: ["mobile"], updatedAt: "2026-09-18T10:00:00Z", createdAt: "2026-01-01T00:00:00Z" }),
@@ -15,6 +15,18 @@ test("status and search combine, including labels and custom workflow statuses",
   assert.deepEqual(filterIssues(tickets, "mobile", null, "updatedAt", "newest").map((item) => item.id), ["a"]);
   assert.deepEqual(statusCounts(tickets), [["Done", 1], ["In Progress", 2], ["Waiting for review", 1]]);
   assert.equal(filterIssues(tickets, "", "Missing status", "updatedAt", "newest").length, 0);
+});
+
+test("dependency filters distinguish tickets that block others from tickets that are blocked", () => {
+  const dependencies = [
+    normalizeIssue({ id: "blocker", title: "Shared API", relations: { nodes: [{ type: "blocks", issue: { id: "blocker" }, relatedIssue: { id: "waiting" } }] } }),
+    normalizeIssue({ id: "blocked", title: "Waiting UI", inverseRelations: { nodes: [{ type: "blocks", issue: { id: "upstream" }, relatedIssue: { id: "blocked" } }] } }),
+    normalizeIssue({ id: "free", title: "Independent" }),
+  ];
+  assert.deepEqual(filterIssues(dependencies, "", null, "updatedAt", "newest", "blocking").map((issue) => issue.id), ["blocker"]);
+  assert.deepEqual(filterIssues(dependencies, "", null, "updatedAt", "newest", "blocked").map((issue) => issue.id), ["blocked"]);
+  assert.equal(dependencies[0].blockingCount, 1);
+  assert.equal(dependencies[1].blockedByCount, 1);
 });
 
 test("date sort uses actual timestamps, keeps missing dates last and does not mutate the source", () => {
@@ -75,6 +87,16 @@ test("workflow categories tone states before name keywords, with a safe fallback
   assert.equal(statusTone("In Review", "  STARTED "), "active");
   assert.equal(statusTone("Waiting for review", "weird"), "review");
   assert.equal(statusTone("Blocked on vendor", "weird"), "neutral");
+});
+
+test("status icons distinguish backlog, todo, active and blocked work", () => {
+  assert.equal(statusIcon("Backlog", "backlog"), "CircleDashed");
+  assert.equal(statusIcon("Todo", "unstarted"), "Circle");
+  assert.equal(statusIcon("In Progress", "started"), "CircleFilled");
+  assert.equal(statusIcon("Blocked", "unstarted"), "Lock");
+  assert.equal(statusIcon("Blocked on vendor", "started"), "Lock");
+  assert.equal(statusIcon("In Review", "started"), "ScanEye");
+  assert.equal(statusIcon("Done", "completed"), "CircleCheck");
 });
 
 test("priority accepts labels and Linear's numeric values", () => {

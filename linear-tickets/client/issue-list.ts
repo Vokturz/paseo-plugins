@@ -2,6 +2,7 @@ import type { Issue } from "../shared/contracts";
 
 export type SortField = "updatedAt" | "createdAt" | "dueDate" | "priority";
 export type SortDirection = "newest" | "oldest";
+export type DependencyFilter = "all" | "blocking" | "blocked";
 export const issueStatus = (issue: Issue) => issue.status.trim() || "No status";
 
 // Linear's priority scale: 1 = Urgent (most urgent) … 4 = Low; 0/missing = no priority.
@@ -14,9 +15,10 @@ export function priorityRank(priority: string): number {
   return label in PRIORITY_RANKS ? PRIORITY_RANKS[label] : 4;
 }
 
-export function filterIssues(issues: Issue[], query: string, status: string | null, field: SortField, direction: SortDirection) {
+export function filterIssues(issues: Issue[], query: string, status: string | null, field: SortField, direction: SortDirection, dependency: DependencyFilter = "all") {
   const search = query.trim().toLowerCase();
   return issues.filter((issue) => (!status || issueStatus(issue) === status)
+    && (dependency === "all" || (dependency === "blocking" ? issue.blockingCount > 0 : issue.blockedByCount > 0))
     && [issue.identifier, issue.title, issue.project, issue.team, issue.status, ...issue.labels].join(" ").toLowerCase().includes(search))
     .sort((a, b) => {
       if (field === "priority") {
@@ -62,6 +64,7 @@ export function formatIssueDate(value: string) {
 
 // Linear workflows are user-defined, so tone matching stays generic: keywords, not exact names.
 export type StatusTone = "done" | "canceled" | "active" | "review" | "backlog" | "neutral";
+export type StatusIconKind = "CircleCheck" | "CircleSlash" | "ScanEye" | "CircleDashed" | "Circle" | "CircleFilled" | "Lock";
 
 // WorkflowState.type is an open string set (observed: backlog, unstarted, triage, started,
 // completed, duplicate, canceled), so this is a known-value fast path, not a closed enum.
@@ -86,6 +89,23 @@ export function statusTone(status: string, statusType = ""): StatusTone {
   if (/(progress|started|doing|active|working|dev(el)?|implement)/.test(name)) return "active";
   if (/(backlog|icebox|triage|todo|to do|planned|planning|next|ready|queue)/.test(name)) return "backlog";
   return "neutral";
+}
+
+/** Status symbols stay distinct even when workflow categories share a color. */
+export function statusIcon(status: string, statusType = ""): StatusIconKind {
+  const name = status.trim().toLowerCase();
+  const type = statusType.trim().toLowerCase();
+  if (/(^|\W)(blocked|blocking)(\W|$)/.test(name)) return "Lock";
+  if (/(review|verify|verification|qa|approval)/.test(name)) return "ScanEye";
+  if (type === "backlog" || /(^|\W)(backlog|icebox)(\W|$)/.test(name)) return "CircleDashed";
+  if (type === "unstarted" || type === "triage" || /(^|\W)(todo|to do|triage|planned|ready)(\W|$)/.test(name)) return "Circle";
+  if (type === "started" || /(^|\W)(in progress|started|doing|active|working)(\W|$)/.test(name)) return "CircleFilled";
+  const tone = statusTone(status, statusType);
+  if (tone === "done") return "CircleCheck";
+  if (tone === "canceled") return "CircleSlash";
+  if (tone === "review") return "ScanEye";
+  if (tone === "active") return "CircleFilled";
+  return "Circle";
 }
 
 export type PriorityTone = "urgent" | "high" | "medium" | "low" | "none";

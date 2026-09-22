@@ -6,7 +6,7 @@ import { test, type TestContext } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
 import type { PaseoApi, PaseoWorkspaceAgentCreateOptions, PaseoWorkspaceCreateOptions } from "@getpaseo/client";
-import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships, stateHistorySpans } from "./context";
+import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relationships, stateHistorySpans, ticketRelations } from "./context";
 import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
@@ -33,7 +33,7 @@ const comment = {
   id: "comment-1", body: "Regression on mobile", createdAt: "2025-01-02T01:00:00.000Z",
   url: "https://linear.app/example/issue/ENG-42#comment-1", user: { name: "Tofu" },
 };
-const detail = { issue: normalizeIssue(rawIssue), teamId: "team-1", context: buildContext(rawIssue, [comment]), warnings: [] };
+const detail = { issue: normalizeIssue(rawIssue), teamId: "team-1", context: buildContext(rawIssue, [comment]), warnings: [], relations: ticketRelations(rawIssue) };
 const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", markInProgress: false, requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
 // Test fakes that do not exercise the state transition: a no-op stub keeps the contract strict.
 const noMark = { markInProgress: async () => ({ changed: false }) };
@@ -113,9 +113,30 @@ test("issue normalization reads workflow state, its category, priority labels an
   assert.deepEqual(issue.labels, ["bug"]);
   assert.equal(issue.description, rawIssue.description);
   assert.equal(issue.updatedAt, rawIssue.updatedAt);
+  assert.equal(issue.blockingCount, 1);
+  assert.equal(issue.blockedByCount, 0);
   assert.equal(normalizeIssue({ id: "x", title: "No category", state: { name: "Weird" } }).statusType, "");
   assert.equal(normalizeIssue({ id: "x", title: "No state at all" }).statusType, "");
   assert.throws(() => normalizeIssue({ title: "Missing ID" }), /without an ID/);
+});
+
+test("ticket relations expose parent, subissues and both relation directions with assignees", () => {
+  const value = ticketRelations({
+    id: "issue-1",
+    parent: { id: "parent", identifier: "ENG-1", title: "Parent", state: { name: "Todo", type: "unstarted" }, assignee: null },
+    children: { nodes: [{ id: "child", identifier: "ENG-3", title: "Child", url: "https://linear.app/child", state: { name: "In Progress", type: "started" }, assignee: { id: "viewer-1", name: "Ada" } }] },
+    relations: { nodes: [{ type: "blocks", issue: { id: "issue-1" }, relatedIssue: { id: "downstream", identifier: "ENG-4", title: "Downstream" } }] },
+    inverseRelations: { nodes: [{ type: "blocks", issue: { id: "upstream", identifier: "ENG-5", title: "Upstream", assignee: { name: "Lin" } }, relatedIssue: { id: "issue-1" } }] },
+  }, "viewer-1");
+  assert.equal(value.parent?.identifier, "ENG-1");
+  assert.equal(value.parent?.assignee, "");
+  assert.deepEqual(value.subissues.map((ticket) => [ticket.identifier, ticket.assignee]), [["ENG-3", "Ada"]]);
+  assert.equal(value.subissues[0].assignedToViewer, true);
+  assert.equal(value.related[0].assignedToViewer, false);
+  assert.deepEqual(value.related.map((ticket) => [ticket.direction, ticket.identifier, ticket.assignee]), [
+    ["blocks", "ENG-4", ""],
+    ["blocked by", "ENG-5", "Lin"],
+  ]);
 });
 
 test("connections expose nodes, page cursors and missing-page detection", () => {
@@ -197,7 +218,7 @@ test("relationships normalize relations and inverse relations into directed, de-
 
 test("prompts render a relationships block above the snapshot only when the ticket has relationships", () => {
   const inverseOnly = { ...rawIssue, relations: { nodes: [] }, inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] } };
-  const withRelations = { issue: normalizeIssue(inverseOnly), teamId: null, context: buildContext(inverseOnly, []), warnings: [] };
+  const withRelations = { issue: normalizeIssue(inverseOnly), teamId: null, context: buildContext(inverseOnly, []), warnings: [], relations: ticketRelations(inverseOnly) };
   const prompt = buildPrompt(withRelations, "");
   assert.ok(prompt.includes("Relationships:\n- related to OW-1732: Other ticket"));
   assert.ok(prompt.indexOf("Relationships:") < prompt.indexOf("Linear ticket snapshot (JSON):"));
@@ -205,7 +226,7 @@ test("prompts render a relationships block above the snapshot only when the tick
   const templated = buildPrompt(withRelations, "", template);
   assert.ok(templated.includes("Relationships:\n- related to OW-1732: Other ticket"));
   assert.ok(templated.indexOf("Relationships:") < templated.indexOf(`"id": "issue-1"`), "relationships precede the JSON snapshot in template prompts");
-  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), teamId: null, context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [] };
+  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), teamId: null, context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [], relations: ticketRelations({ ...rawIssue, relations: undefined, inverseRelations: undefined }) };
   const plain = buildPrompt(without, "");
   assert.ok(!plain.includes("Relationships:"), "no empty Relationships header");
   assert.ok(!buildPrompt("raw context string", "").includes("Relationships:"));
@@ -340,6 +361,16 @@ test("the list filter is deterministic; an explicit status selection beats the c
   assert.deepEqual(listIssueFilter([], false), { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } } });
   assert.deepEqual(listIssueFilter(["Done", "  In Progress", "Done", "  "]), { assignee: { isMe: { eq: true } }, state: { name: { in: ["Done", "In Progress"] } } });
   assert.deepEqual(listIssueFilter(["Done"], true), listIssueFilter(["Done"]));
+  assert.deepEqual(listIssueFilter(undefined, false, "blocking"), {
+    assignee: { isMe: { eq: true } },
+    state: { type: { nin: ["completed", "canceled", "duplicate"] } },
+    hasBlockingRelations: { eq: true },
+  });
+  assert.deepEqual(listIssueFilter(["Todo"], false, "blocked"), {
+    assignee: { isMe: { eq: true } },
+    state: { name: { in: ["Todo"] } },
+    hasBlockedByRelations: { eq: true },
+  });
 });
 
 test("ticket listing forwards the built filter to Linear", async () => {
@@ -355,6 +386,8 @@ test("ticket listing forwards the built filter to Linear", async () => {
   assert.deepEqual(calls[1].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } } } });
   await service.issues(undefined, ["In Progress"]);
   assert.deepEqual(calls[2].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { name: { in: ["In Progress"] } } } });
+  await service.issues(undefined, undefined, false, "blocking");
+  assert.deepEqual(calls[3].variables, { first: 50, after: null, filter: { assignee: { isMe: { eq: true } }, state: { type: { nin: ["completed", "canceled", "duplicate"] } }, hasBlockingRelations: { eq: true } } });
 });
 
 test("issue counts aggregate across pages, skip malformed nodes, and report completeness", async () => {
@@ -402,6 +435,9 @@ test("issue counts stop at the page cap and flag the sweep as incomplete", async
 
 test("list and count RPC contracts validate their inputs and outputs", () => {
   assert.equal(listIssuesRpc.input.safeParse({ stateNames: ["Done"] }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ relation: "blocking" }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ relation: "blocked" }).success, true);
+  assert.equal(listIssuesRpc.input.safeParse({ relation: "related" }).success, false);
   assert.equal(listIssuesRpc.input.safeParse({ stateNames: Array.from({ length: 13 }, (_, i) => `s${i}`) }).success, false);
   assert.equal(listIssuesRpc.input.safeParse({ cursor: "x", stateNames: ["a", "b"] }).success, true);
   assert.equal(countIssuesRpc.input.safeParse({}).success, true);
@@ -456,6 +492,9 @@ test("details fetch relations and paginated comments using the resolved issue ID
   assert.equal(JSON.parse(result.context).comments.length, 1);
   assert.equal(JSON.parse(result.context).comments[0].body, "Regression on mobile");
   assert.deepEqual(result.warnings, []);
+  assert.equal(result.relations.parent, null);
+  assert.deepEqual(result.relations.subissues.map((ticket) => ticket.identifier), ["ENG-44"]);
+  assert.deepEqual(result.relations.related.map((ticket) => [ticket.direction, ticket.identifier]), [["blocks", "ENG-43"]]);
 });
 
 test("detail queries state history and folds it into the context snapshot and prompt", async () => {

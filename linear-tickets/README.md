@@ -69,6 +69,11 @@ highest / lowest); missing dates and tickets with no priority sort last. Sorting
 applies to the loaded tickets; choose **Load all tickets** to include
 every assignment. Archived tickets are excluded.
 
+The **Dependencies** filter can focus the assigned list on tickets that are **Blocking
+others** or are themselves **Blocked**. This filtering runs in Linear, so it covers every
+assignment rather than only loaded pages. Rows show compact **Blocks N** and **Blocked by N**
+badges whenever a dependency is present.
+
 The most recent first page and its status counts are cached on the Paseo host. Reopening
 the surface within five minutes uses that snapshot immediately instead of querying Linear
 again; older snapshots are shown while a fresh request runs. The list shows when it was
@@ -80,7 +85,10 @@ label chips, a due date and estimate when your team sets them, and a relative
 timestamp ("3h ago"), with the absolute date in the accessibility label. Status colours follow Linear's workflow category (`started`,
 `completed`, `canceled`, `backlog`, `unstarted`, `duplicate`, …), so custom state
 names such as "In Review" get the right tone in any workspace; keyword matching on
-the state name remains as a fallback for categories that are not recognised. While tickets load,
+the state name remains as a fallback for categories that are not recognised. Status symbols
+distinguish a segmented backlog circle, an empty Todo circle, a filled In Progress circle,
+and a padlock for blocked work. The status filter chips use the same symbols as ticket
+badges. While tickets load,
 placeholder rows stand in for the table so the layout does not jump.
 
 For Git projects, the plugin creates a dedicated worktree from the selected base
@@ -114,7 +122,13 @@ are unavailable, the preview and agent prompt say so. Context over 200,000 chara
 is rejected rather than silently truncated.
 
 The ticket preview shows the ticket's project, team, labels, priority, dates (including
-due date and estimate when set) and a status-history line, then renders the description as Markdown: headings, bullet and numbered lists, task
+due date and estimate when set), a status-history line, and a **Related tickets** section.
+That section includes the parent, subissues, blockers, blocked tickets, duplicates, and
+general relations returned by Linear—even when those tickets are unassigned or assigned
+to somebody else. It stays collapsed behind a **Show related tickets** toggle until needed;
+tickets assigned to the connected Linear user are highlighted. Selecting one opens its
+own detail and launch view. The preview then
+renders the description as Markdown: headings, bullet and numbered lists, task
 checkboxes, pipe tables, quotes, dividers, bold text, inline code and fenced code
 blocks. Tables scroll horizontally when they are too wide and keep their column
 alignment. Code blocks carry a copy button, and **Copy context** copies the exact

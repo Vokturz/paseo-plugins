@@ -68,6 +68,7 @@ export class TicketCache {
         || !Array.isArray(value.issues) || (typeof value.nextCursor !== "string" && value.nextCursor !== null)
         || typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt))
         || !value.issues.every((issue) => issueSchema.safeParse(issue).success)) return null;
+      value.issues = value.issues.map((issue) => issueSchema.parse(issue));
       if (value.counts && !issueCountsSchema.safeParse(value.counts).success) delete value.counts;
       return value as CacheEntry;
     } catch (error) {
