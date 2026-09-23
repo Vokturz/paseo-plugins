@@ -4,10 +4,11 @@ import { launchAgentRpc } from "../shared/contracts";
 import { buildPrompt } from "./context";
 import type { LinearService } from "./linear";
 import { findProject, readBranches } from "./projects";
+import { TICKET_MCP_NAME, ticketMcpServer, writeTicketMcpScript } from "./ticket-mcp";
 
 type Start = RpcInput<typeof launchAgentRpc>;
 type Result = { agentId: string; warnings: string[] };
-type Options = { promptTemplate?: string; markInProgress?: boolean };
+type Options = { promptTemplate?: string; markInProgress?: boolean; linearAccess?: boolean };
 
 // Linear computes the branch name with the workspace's branch-format setting, so it is
 // the name users expect — but a stored value is not guaranteed to be a safe git ref.
@@ -32,10 +33,14 @@ export class Launcher {
   private readonly requests = new Map<string, { fingerprint: string; result: Promise<Result> }>();
   private readonly active = new Map<string, Promise<Result>>();
 
-  constructor(private readonly linear: Pick<LinearService, "detail" | "markInProgress">, private readonly branches = readBranches) {}
+  constructor(
+    private readonly linear: Pick<LinearService, "detail" | "markInProgress">,
+    private readonly branches = readBranches,
+    private readonly ticketScript: () => Promise<string> = () => writeTicketMcpScript(),
+  ) {}
 
   start(input: Start, paseo: PaseoApi, options: Options = {}): Promise<Result> {
-    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? "", options.markInProgress ?? false]);
+    const fingerprint = JSON.stringify([input.id, input.projectId, input.baseBranch, input.provider, input.modeId, input.thinkingOptionId, input.instructions, options.promptTemplate ?? "", options.markInProgress ?? false, options.linearAccess ?? false]);
     const prior = this.requests.get(input.requestId);
     if (prior) {
       if (prior.fingerprint !== fingerprint) return Promise.reject(new Error("This launch request has already been used. Reopen the ticket to start another agent."));
@@ -74,6 +79,8 @@ export class Launcher {
       throw new Error("This project does not support Git branches.");
     }
     const detail = await this.linear.detail(input.id);
+    // Written before any creation so a failure here cannot leave a half-launched ticket.
+    const mcpServers = options.linearAccess ? { [TICKET_MCP_NAME]: ticketMcpServer(await this.ticketScript(), detail.issue.id) } : undefined;
     onCreate();
     const title = `${detail.issue.identifier}: ${detail.issue.title}`.slice(0, 60);
     const slug = detail.issue.identifier.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 40) || "ticket";
@@ -102,9 +109,9 @@ export class Launcher {
       }
     }
     const agent = await workspace.agents.create({
-      config: { provider: input.provider, modeId: input.modeId, thinkingOptionId: input.thinkingOptionId },
+      config: { provider: input.provider, modeId: input.modeId, thinkingOptionId: input.thinkingOptionId, ...(mcpServers ? { mcpServers } : {}) },
       title,
-      prompt: buildPrompt(detail, input.instructions, options.promptTemplate),
+      prompt: buildPrompt(detail, input.instructions, options.promptTemplate, options.linearAccess ?? false),
       requestId: input.requestId,
       clientMessageId: input.requestId,
       labels: { "linear.issueId": detail.issue.id, "linear.identifier": detail.issue.identifier, "linear.url": detail.issue.url },

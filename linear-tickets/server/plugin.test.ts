@@ -33,7 +33,7 @@ const comment = {
   id: "comment-1", body: "Regression on mobile", createdAt: "2025-01-02T01:00:00.000Z",
   url: "https://linear.app/example/issue/ENG-42#comment-1", user: { name: "Tofu" },
 };
-const detail = { issue: normalizeIssue(rawIssue), teamId: "team-1", context: buildContext(rawIssue, [comment]), warnings: [], relations: ticketRelations(rawIssue) };
+const detail = { issue: normalizeIssue(rawIssue), teamId: "team-1", projectId: "project-1", context: buildContext(rawIssue, [comment]), warnings: [], relations: ticketRelations(rawIssue) };
 const input = { id: "ENG-42", projectId: "project-1", provider: "test/model", instructions: "Add a regression check.", markInProgress: false, requestId: "5f6f1154-5838-4439-b981-b3c9d9831488" };
 // Test fakes that do not exercise the state transition: a no-op stub keeps the contract strict.
 const noMark = { markInProgress: async () => ({ changed: false }) };
@@ -218,7 +218,7 @@ test("relationships normalize relations and inverse relations into directed, de-
 
 test("prompts render a relationships block above the snapshot only when the ticket has relationships", () => {
   const inverseOnly = { ...rawIssue, relations: { nodes: [] }, inverseRelations: { nodes: [{ type: "related", issue: { id: "issue-9", identifier: "OW-1732", title: "Other ticket" }, relatedIssue: { id: "issue-1" } }] } };
-  const withRelations = { issue: normalizeIssue(inverseOnly), teamId: null, context: buildContext(inverseOnly, []), warnings: [], relations: ticketRelations(inverseOnly) };
+  const withRelations = { issue: normalizeIssue(inverseOnly), teamId: null, projectId: null, context: buildContext(inverseOnly, []), warnings: [], relations: ticketRelations(inverseOnly) };
   const prompt = buildPrompt(withRelations, "");
   assert.ok(prompt.includes("Relationships:\n- related to OW-1732: Other ticket"));
   assert.ok(prompt.indexOf("Relationships:") < prompt.indexOf("Linear ticket snapshot (JSON):"));
@@ -226,7 +226,7 @@ test("prompts render a relationships block above the snapshot only when the tick
   const templated = buildPrompt(withRelations, "", template);
   assert.ok(templated.includes("Relationships:\n- related to OW-1732: Other ticket"));
   assert.ok(templated.indexOf("Relationships:") < templated.indexOf(`"id": "issue-1"`), "relationships precede the JSON snapshot in template prompts");
-  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), teamId: null, context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [], relations: ticketRelations({ ...rawIssue, relations: undefined, inverseRelations: undefined }) };
+  const without = { issue: normalizeIssue({ ...rawIssue, relations: undefined, inverseRelations: undefined }), teamId: null, projectId: null, context: buildContext({ ...rawIssue, relations: undefined, inverseRelations: undefined }, []), warnings: [], relations: ticketRelations({ ...rawIssue, relations: undefined, inverseRelations: undefined }) };
   const plain = buildPrompt(without, "");
   assert.ok(!plain.includes("Relationships:"), "no empty Relationships header");
   assert.ok(!buildPrompt("raw context string", "").includes("Relationships:"));
@@ -258,14 +258,14 @@ test("settings persist the template with private permissions and reset removes i
   const path = join(directory, "settings.json");
   try {
     const settings = new Settings(path);
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     const saved = await settings.save("Handle {{ticket}}\n{{context}}");
     assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await settings.read(), saved);
-    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     await assert.rejects(readFile(path), { code: "ENOENT" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -275,17 +275,17 @@ test("the mark-in-progress setting round-trips without disturbing the saved temp
   try {
     const settings = new Settings(path);
     await settings.patch({ markInProgress: true });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     await settings.save("Handle {{ticket}}\n{{context}}");
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     // The closed-states setting round-trips the same way and never disturbs the other fields.
     await settings.patch({ showClosed: true });
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     // Clearing the template keeps the flags; clearing the last flag with no template removes the file.
     await settings.patch({ template: "" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     await settings.patch({ markInProgress: false, showClosed: false });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {} });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
     await assert.rejects(readFile(path), { code: "ENOENT" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -303,6 +303,7 @@ test("settings remember the last successful launch choices per provider", async 
         codex: { model: "codex/gpt-5", modeId: "code", thinkingOptionId: "high" },
         claude: { model: "claude/sonnet" },
       },
+      projectMappings: {}, agentLinearAccess: true,
     });
     assert.equal((await stat(path)).mode & 0o777, 0o600);
   } finally { await rm(directory, { recursive: true, force: true }); }
