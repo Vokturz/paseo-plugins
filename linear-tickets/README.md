@@ -139,6 +139,35 @@ agent's workspace or added to its prompt. Provider badges, available modes, and 
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
 out of the form.
 
+## Project mappings
+
+Opening a ticket preselects where its agent runs. A Linear project (or, for tickets without
+one, the team) maps to a Paseo project and, for Git projects, a base branch. Starting an agent
+remembers the choice for that Linear project; until a mapping exists, a Paseo project whose
+name equals the Linear project name is preselected when exactly one matches. A choice you make
+by hand is never overridden. **Settings → Project mappings** lists the saved mappings and can
+forget them. Mappings are stored per host in `settings.json`.
+
+## Agent access to Linear
+
+Agents started from a ticket get a `linear_ticket` MCP server (on by default, **Settings →
+Agent access to Linear** turns it off). Its tools act only on the ticket the agent started from:
+
+- `get_ticket` — fresh title, description, status, the team's workflow states, comments, links;
+- `add_comment` — post a Markdown comment;
+- `set_status` — move to another state of the ticket's team by name (canceled and duplicate
+  states are left to people);
+- `link_url` — attach an https link, such as the pull request.
+
+The launch prompt tells the agent to comment when it starts and finishes, link its pull request
+and move the ticket to review; custom templates can place that note with `{{linear_access}}`,
+and it is appended when they do not. The server is a dependency-free script written to
+`$PASEO_HOME/linear-tickets/ticket-mcp-<hash>.mjs` and run with `node` from the agent's PATH.
+The agent configuration carries only that path and the issue ID; the server reads the key at
+call time from `LINEAR_API_KEY` or the saved connection, so it needs a key with write access.
+Agents run as the same user as the daemon, so this scopes the tools, not the key: an agent
+that reads the credentials file directly is not prevented from using it.
+
 ## Settings
 
 The **Settings** menu (gear icon in the header, next to the connection and refresh
