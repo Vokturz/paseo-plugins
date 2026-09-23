@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,6 +11,7 @@ import type { PaseoApi, PaseoWorkspaceAgentCreateOptions } from "@getpaseo/clien
 import { LINEAR_ACCESS_NOTE, NO_LINEAR_ACCESS_NOTE } from "../shared/contracts";
 import { buildPrompt, normalizeIssue } from "./context";
 import { Launcher } from "./launch";
+import { Settings } from "./settings";
 import { ticketMcpServer, writeTicketMcpScript } from "./ticket-mcp";
 
 const ISSUE_ID = "6b1f0c2a-1111-4222-8333-444455556666";
@@ -80,7 +81,7 @@ test("the MCP script is written once, privately, under a content hash", async ()
 });
 
 type Call = { authorization: string | undefined; query: string; variables: Record<string, unknown> };
-async function fakeLinear(respond: (call: Call) => unknown) {
+async function fakeLinear(respond: (call: Call) => unknown, options: { status?: number; delayMs?: number; raw?: (call: Call) => unknown } = {}) {
   const calls: Call[] = [];
   const server = createServer(async (request: IncomingMessage, response) => {
     let body = "";
@@ -88,8 +89,10 @@ async function fakeLinear(respond: (call: Call) => unknown) {
     const parsed = JSON.parse(body);
     const call = { authorization: request.headers.authorization, query: parsed.query, variables: parsed.variables };
     calls.push(call);
+    if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    response.statusCode = options.status ?? 200;
     response.setHeader("content-type", "application/json");
-    response.end(JSON.stringify({ data: respond(call) }));
+    response.end(JSON.stringify(options.raw ? options.raw(call) : { data: respond(call) }));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/graphql`;
@@ -101,9 +104,12 @@ function runServer(script: string, args: string[], env: Record<string, string>) 
   const pending = new Map<number, (value: Record<string, unknown>) => void>();
   createInterface({ input: child.stdout }).on("line", (line) => {
     const message = JSON.parse(line);
+    lines.push(message);
     pending.get(message.id)?.(message);
   });
   let next = 1;
+  const lines: Record<string, unknown>[] = [];
+  const raw = (line: string) => child.stdin.write(line + "\n");
   const request = (method: string, params?: unknown) => new Promise<Record<string, unknown>>((resolve, reject) => {
     const id = next++;
     const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 10_000);
@@ -114,7 +120,7 @@ function runServer(script: string, args: string[], env: Record<string, string>) 
     const result = (await request("tools/call", { name, arguments: args })).result as { content: { text: string }[]; isError?: boolean };
     return { text: result.content[0].text, isError: result.isError === true };
   };
-  return { child, request, call, stop: () => { child.kill(); } };
+  return { child, request, call, raw, lines, stop: () => { child.kill(); } };
 }
 
 const states = [
@@ -196,4 +202,99 @@ test("the MCP server refuses to start without a valid issue id", async () => {
     });
     assert.equal(code, 2);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("settings serialize concurrent patches so none is lost, and keep orphaned launch preferences", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paseo-linear-settings-race-"));
+  const path = join(directory, "settings.json");
+  try {
+    const settings = new Settings(path);
+    await Promise.all([
+      settings.patch({ launchPreference: { provider: "codex", model: "codex/model" } }),
+      settings.patch({ projectMapping: { key: "project:p", projectId: "repo", label: "P" } }),
+      settings.patch({ showClosed: true }),
+    ]);
+    const saved = await settings.read();
+    assert.equal(saved.lastProvider, "codex");
+    assert.deepEqual(Object.keys(saved.projectMappings), ["project:p"]);
+    assert.equal(saved.showClosed, true);
+    await writeFile(path, JSON.stringify({ launchPreferences: { codex: { model: "codex/model" } } }));
+    await settings.patch({});
+    assert.deepEqual((await settings.read()).launchPreferences, { codex: { model: "codex/model" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a cached script with loose permissions or a symlink is rewritten, not trusted", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-linear-mcp-reuse-"));
+  try {
+    const path = await writeTicketMcpScript(home);
+    await chmod(path, 0o666);
+    await chmod(join(home, "linear-tickets"), 0o777);
+    assert.equal(await writeTicketMcpScript(home), path);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal((await stat(join(home, "linear-tickets"))).mode & 0o777, 0o700);
+    const target = join(home, "elsewhere.mjs");
+    await writeFile(target, await readFile(path, "utf8"), { mode: 0o600 });
+    await rm(path);
+    await symlink(target, path);
+    await writeTicketMcpScript(home);
+    assert.ok((await lstat(path)).isFile());
+    assert.ok((await lstat(target)).isFile());
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("API error text never carries the key back to the agent", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-linear-mcp-redact-"));
+  const echo = (call: Call) => ({ errors: [{ message: "rejected: " + call.authorization }] });
+  const unauthorized = await fakeLinear(() => ({}), { status: 401, raw: echo });
+  const failing = await fakeLinear(() => ({}), { raw: echo });
+  const script = await writeTicketMcpScript(home);
+  const env = { LINEAR_API_KEY: "lin_api_SECRETSECRET" };
+  const a = runServer(script, ["--issue", ISSUE_ID, "--paseo-home", home], { ...env, LINEAR_TICKET_MCP_ENDPOINT: unauthorized.url });
+  const b = runServer(script, ["--issue", ISSUE_ID, "--paseo-home", home], { ...env, LINEAR_TICKET_MCP_ENDPOINT: failing.url });
+  try {
+    const first = await a.call("get_ticket");
+    assert.equal(first.isError, true);
+    assert.doesNotMatch(first.text, /SECRET/);
+    const second = await b.call("add_comment", { body: "x" });
+    assert.equal(second.isError, true);
+    assert.match(second.text, /\[redacted\]/);
+    assert.doesNotMatch(second.text, /SECRET/);
+  } finally { a.stop(); b.stop(); await unauthorized.close(); await failing.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("the MCP server validates envelopes, never runs tools for notifications, and bounds input", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-linear-mcp-envelope-"));
+  const linear = await fakeLinear(() => ({ commentCreate: { success: true, comment: { url: "u" } }, attachmentLinkURL: { success: true } }));
+  const script = await writeTicketMcpScript(home);
+  const mcp = runServer(script, ["--issue", ISSUE_ID, "--paseo-home", home], { LINEAR_API_KEY: "k", LINEAR_TICKET_MCP_ENDPOINT: linear.url });
+  try {
+    mcp.raw("null"); mcp.raw("[]"); mcp.raw(JSON.stringify({ jsonrpc: "1.0", id: 3, method: "ping" }));
+    mcp.raw(JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name: "add_comment", arguments: { body: "sneaky" } } }));
+    mcp.raw(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "ping", params: { pad: "x".repeat(1_100_000) } }));
+    assert.deepEqual(await mcp.request("ping"), { jsonrpc: "2.0", id: 1, result: {} });
+    const invalid = mcp.lines.filter((line) => (line.error as { code?: number } | undefined)?.code === -32600);
+    assert.equal(invalid.length, 4);
+    assert.ok(invalid.some((line) => (line.error as { message: string }).message === "Request too large"));
+    assert.ok(!mcp.lines.some((line) => line.id === 99));
+    const long = await mcp.call("link_url", { url: "https://example.com/" + "a".repeat(3000) });
+    assert.equal(long.isError, true);
+    assert.equal((await mcp.request("tools/call", { name: "add_comment", arguments: [] })).error !== undefined, true);
+    assert.equal(linear.calls.length, 0);
+  } finally { mcp.stop(); await linear.close(); await rm(home, { recursive: true, force: true }); }
+});
+
+test("the MCP server caps concurrent Linear calls and ignores a non-127.0.0.1 endpoint override", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-linear-mcp-limits-"));
+  const slow = await fakeLinear(() => ({ commentCreate: { success: true, comment: { url: "u" } } }), { delayMs: 300 });
+  const script = await writeTicketMcpScript(home);
+  const mcp = runServer(script, ["--issue", ISSUE_ID, "--paseo-home", home], { LINEAR_API_KEY: "k", LINEAR_TICKET_MCP_ENDPOINT: slow.url });
+  const localhost = runServer(script, ["--issue", ISSUE_ID, "--paseo-home", home], { LINEAR_API_KEY: "not-a-real-key", LINEAR_TICKET_MCP_ENDPOINT: slow.url.replace("127.0.0.1", "localhost") });
+  try {
+    const results = await Promise.all(Array.from({ length: 6 }, () => mcp.call("add_comment", { body: "x" })));
+    assert.equal(results.filter((result) => result.isError && /Too many/.test(result.text)).length, 2);
+    assert.equal(slow.calls.length, 4);
+    await localhost.call("get_ticket");
+    assert.equal(slow.calls.length, 4);
+  } finally { mcp.stop(); localhost.stop(); await slow.close(); await rm(home, { recursive: true, force: true }); }
 });

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { TICKET_MCP_SOURCE } from "./ticket-mcp-source";
@@ -15,15 +15,24 @@ export function paseoHome(): string {
 export async function writeTicketMcpScript(home = paseoHome(), source = TICKET_MCP_SOURCE): Promise<string> {
   const directory = join(home, "linear-tickets");
   const path = join(directory, `ticket-mcp-${createHash("sha256").update(source).digest("hex").slice(0, 12)}.mjs`);
-  if (await readFile(path, "utf8").then((current) => current === source, () => false)) return path;
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
+  if (await reusable(path, source)) return path;
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, source, { mode: 0o600, flag: "wx" });
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
   return path;
+}
+
+// Reuse only a private regular file we own with the exact bytes; anything else is rewritten,
+// and rename replaces a symlink itself rather than its target.
+async function reusable(path: string, source: string): Promise<boolean> {
+  const info = await lstat(path).catch(() => null);
+  if (!info?.isFile() || (info.mode & 0o077) !== 0) return false;
+  if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
+  return readFile(path, "utf8").then((current) => current === source, () => false);
 }
 
 // Only the issue id and a path go into the saved agent config; the key is read at call time.

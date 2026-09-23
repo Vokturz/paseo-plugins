@@ -82,6 +82,14 @@ export function normalizeTemplate(raw: string): string | null {
 }
 
 export class Settings {
+  // Every read-modify-write runs in order, so concurrent patches cannot drop each other.
+  private queue: Promise<unknown> = Promise.resolve();
+  private serialize<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(work, work);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
   constructor(
     private readonly path = join(process.env.PASEO_HOME?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".paseo"), "linear-tickets", "settings.json"),
   ) {}
@@ -111,13 +119,21 @@ export class Settings {
     };
   }
 
-  async save(raw: string): Promise<PluginSettings> {
+  save(raw: string): Promise<PluginSettings> {
+    return this.serialize(() => this.saveNow(raw));
+  }
+
+  private async saveNow(raw: string): Promise<PluginSettings> {
     const current = await this.read();
     return this.write({ ...current, template: normalizeTemplate(raw) });
   }
 
   // Patches only the provided fields; `template: ""` clears the template (built-in default).
-  async patch(patch: SettingsPatch): Promise<PluginSettings> {
+  patch(patch: SettingsPatch): Promise<PluginSettings> {
+    return this.serialize(() => this.patchNow(patch));
+  }
+
+  private async patchNow(patch: SettingsPatch): Promise<PluginSettings> {
     const current = await this.read();
     const next: PluginSettings = {
       ...current,
@@ -148,7 +164,7 @@ export class Settings {
 
   private async write(value: PluginSettings): Promise<PluginSettings> {
     const hasMappings = Object.keys(value.projectMappings).length > 0;
-    if (!value.template && !value.markInProgress && !value.showClosed && !value.lastProvider && !hasMappings && value.agentLinearAccess) {
+    if (!value.template && !value.markInProgress && !value.showClosed && !value.lastProvider && !Object.keys(value.launchPreferences).length && !hasMappings && value.agentLinearAccess) {
       await rm(this.path, { force: true });
       return value;
     }
