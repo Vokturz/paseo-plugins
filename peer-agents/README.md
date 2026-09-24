@@ -20,7 +20,7 @@ Requires Paseo 0.9.1 or newer in the 0.9 line, Node.js 22 or newer, and a `paseo
 From npm:
 
 ```sh
-paseo plugin add npm:paseo-peer-agents@0.1.0
+paseo plugin add npm:paseo-peer-agents@0.1.1
 ```
 
 From a local checkout:

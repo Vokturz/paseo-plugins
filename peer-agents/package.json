@@ -1,6 +1,6 @@
 {
   "name": "paseo-peer-agents",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent-facing tools for independent Paseo peers and cross-workspace messaging.",
   "license": "MIT",
   "repository": {
