@@ -680,7 +680,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               {branchesError && <Callout t={t} tone="danger" message={branchesError} />}
               {!branchesLoading && !branches.length && !branchesError && <Callout t={t} tone="info" message="No branches found. The repository needs at least one commit." />}
               <Text style={t.muted}>Creates a new ticket branch in its own worktree from this branch. Remote branches use the locally fetched version.</Text>
-              <Button title="Refresh branches" icon="RefreshCw" size="sm" disabled={branchesLoading} onPress={() => setBranchesVersion((value) => value + 1)} />
+              <Button title="Refresh branches" icon="RefreshCw" size="sm" disabled={branchesLoading} onPress={() => { setWantedBranch({ ...(baseBranch ? { branch: baseBranch } : {}) }); setBranchesVersion((value) => value + 1); }} />
             </>}
             {project && project.projectKind !== "git" && <Text style={t.muted}>The agent will work in this project’s directory.</Text>}
 
