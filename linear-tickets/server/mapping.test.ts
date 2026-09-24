@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { mappingKey, mappingLabel, resolveMapping, MAX_PROJECT_MAPPINGS } from "../shared/mapping";
+import { mappedBaseBranch, mappingKey, mappingLabel, resolveMapping, MAX_PROJECT_MAPPINGS } from "../shared/mapping";
 import { Settings } from "./settings";
 
 const projects = [
@@ -33,6 +33,16 @@ test("name matching is case-insensitive, unique-only, and never applies to team 
   assert.equal(resolveMapping(source("lp-3", "claude"), {}, projects), null);
   assert.equal(resolveMapping(source("lp-4", "Unknown"), {}, projects), null);
   assert.equal(resolveMapping(source(null, "paseo-ops"), {}, projects), null);
+});
+
+test("a mapped ticket in the already-selected project starts from its saved branch or the repo default", () => {
+  const branches = [{ id: "refs/heads/main" }, { id: "refs/heads/dev" }];
+  assert.deepEqual(mappedBaseBranch("refs/heads/dev", branches, "refs/heads/main", false), { set: "refs/heads/dev" });
+  assert.deepEqual(mappedBaseBranch(undefined, branches, "refs/heads/main", false), { set: "refs/heads/main" });
+  assert.deepEqual(mappedBaseBranch("refs/heads/deleted", branches, "refs/heads/main", false), { set: "refs/heads/main" });
+  assert.deepEqual(mappedBaseBranch(undefined, branches, null, false), { set: "" });
+  assert.deepEqual(mappedBaseBranch("refs/heads/dev", [], null, true), { pending: "refs/heads/dev" });
+  assert.deepEqual(mappedBaseBranch(undefined, [], null, true), { pending: null });
 });
 
 test("settings save, replace, forget and validate project mappings and the access toggle", async () => {

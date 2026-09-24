@@ -13,7 +13,7 @@ import { tokensFor } from "./design";
 import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
 import { restoreLaunchSelection, type LaunchPreference } from "./launch-preferences";
-import { mappingKey, mappingLabel, resolveMapping, type MappingSource, type ProjectMapping } from "../shared/mapping";
+import { mappedBaseBranch, mappingKey, mappingLabel, resolveMapping, type MappingSource, type ProjectMapping } from "../shared/mapping";
 
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
 type ModelChoice = { id: string; label: string; provider: string; description?: string; thinkingOptions: ThinkingOption[]; defaultThinkingOptionId?: string };
@@ -68,6 +68,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [projectId, setProjectId] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
   const [branches, setBranches] = useState<{ id: string; label: string }[]>([]);
+  const [defaultBranch, setDefaultBranch] = useState<string | null>(null);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [branchesVersion, setBranchesVersion] = useState(0);
@@ -270,14 +271,14 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const project = projects.find((item) => item.projectId === projectId);
   useEffect(() => {
     let cancelled = false;
-    setBranches([]); setBaseBranch(""); setBranchesError(null);
+    setBranches([]); setDefaultBranch(null); setBaseBranch(""); setBranchesError(null);
     if (!project || project.projectKind !== "git") { setBranchesLoading(false); return; }
     setBranchesLoading(true);
     void getBranches({ projectId: project.projectId }).then((result) => {
       if (cancelled) return;
       const wanted = pendingBranch.current;
       pendingBranch.current = null;
-      setBranches(result.branches);
+      setBranches(result.branches); setDefaultBranch(result.defaultBranch);
       setBaseBranch(wanted && result.branches.some((branch) => branch.id === wanted) ? wanted : result.defaultBranch ?? "");
     }, (error) => { if (!cancelled) setBranchesError(message(error)); })
       .finally(() => { if (!cancelled) setBranchesLoading(false); });
@@ -291,8 +292,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     setMappingReason(resolved?.reason ?? null);
     if (!resolved) return;
     if (resolved.projectId === projectId) {
-      if (resolved.baseBranch && branches.some((branch) => branch.id === resolved.baseBranch)) setBaseBranch(resolved.baseBranch);
-      else if (resolved.baseBranch && branchesLoading) pendingBranch.current = resolved.baseBranch;
+      const choice = mappedBaseBranch(resolved.baseBranch, branches, defaultBranch, branchesLoading);
+      if ("set" in choice) setBaseBranch(choice.set);
+      else pendingBranch.current = choice.pending;
       return;
     }
     pendingBranch.current = resolved.baseBranch ?? null;
