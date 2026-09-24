@@ -3,6 +3,8 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
 import { openPeerAgent } from "./agent-link";
+import { tokensFor } from "./design";
+import { MarkdownPreview } from "./markdown-preview";
 import { parsePeerCreation } from "../shared/peer-creation";
 
 export { parsePeerCreation };
@@ -17,6 +19,7 @@ export const peerCreationSchema = z.object({
 });
 
 export function PeerCreationCard({ item, theme, host, layout }: PluginTimelineItemProps<z.output<typeof peerCreationSchema>>) {
+  const tokens = tokensFor(theme, layout);
   return (
     <View style={{
       alignSelf: "stretch",
@@ -40,7 +43,7 @@ export function PeerCreationCard({ item, theme, host, layout }: PluginTimelineIt
       </View>
       {item.data.title ? <Text style={{ color: theme.colors.foreground, fontWeight: "600" }}>{item.data.title}</Text> : null}
       {item.data.projectName ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{item.data.projectName}</Text> : null}
-      <Text selectable style={{ color: theme.colors.foreground }}>{item.data.task}</Text>
+      <MarkdownPreview markdown={item.data.task} t={tokens} platform={layout.platform} />
     </View>
   );
 }

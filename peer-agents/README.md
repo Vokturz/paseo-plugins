@@ -6,13 +6,30 @@ Peer agents gives Paseo-managed agents three MCP tools:
 - `create_peer_agent` creates a new workspace in a selected project and starts an **independent, top-level agent** there. It returns the new agent ID and puts the creator's ID in the new agent's first prompt. The creator's chat shows a pending card while creation runs, then a card with the task, project name, and a link to the new agent. The new agent's chat shows a task card with a link back to the creator, hiding the tool instructions. By default, it uses the calling agent's provider and effective model.
 - `send_peer_message` sends a prompt to an agent ID on the same Paseo host, including a peer in another workspace. Paseo's chat renders it as a **Peer agent** card showing the message and a link to the sender.
 
+The creation, task, and message cards render Markdown in their text, including headings, lists, code, links, tables, and images.
+
+![A peer agent created in a separate workspace](images/01-peer-created.png)
+![Task and message cards in the peer agent's conversation](images/02-peer-conversation.png)
+
 The plugin injects its tools into new Claude, Codex, and OpenCode sessions and preapproves those tools through Paseo's tool policy so agents can use them without a human confirmation. Paseo 0.9.1 cannot preapprove exact MCP tools for Pi, so the plugin leaves Pi sessions alone. It does not need Paseo's global `injectIntoAgents` switch. The agent provider must accept stdio MCP servers. Existing sessions must be reloaded to receive the tools. On Linux, the tools also recover the Paseo agent ID from their provider parent process when a provider such as Codex strips environment variables from MCP children.
 
 ## Install
 
 Requires Paseo 0.9.1 or newer in the 0.9 line, Node.js 22 or newer, and a `paseo` CLI on the daemon host's `PATH` that connects to the same daemon as the agent. If the daemon uses a nondefault host or home, set `PASEO_HOST` or `PASEO_HOME` in the daemon's environment so the injected MCP process uses the same target.
 
+From npm:
+
 ```sh
+paseo plugin add npm:paseo-peer-agents@0.1.0
+```
+
+From a local checkout:
+
+```sh
+cd peer-agents
+npm ci
+npm run typecheck
+npm test
 paseo plugin install /absolute/path/to/paseo-plugins/peer-agents
 ```
 

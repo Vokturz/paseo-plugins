@@ -35,8 +35,15 @@ test("shows only the task from the first peer prompt", async () => {
   assert.equal(parsePeerTask("A normal user message"), null);
 });
 
-test("agent links use the host and agent route", async () => {
-  const { peerAgentRoute, peerAgentAppLink } = await loadShared("agent-link");
+test("agent links stay in the current desktop or browser window", async () => {
+  const { peerAgentRoute, peerAgentAppLink, peerAgentNavigationTarget } = await loadShared("agent-link");
   assert.equal(peerAgentRoute("local host", "agent/123"), "/h/local%20host/agent/agent%2F123");
   assert.equal(peerAgentAppLink("local host", "agent/123"), "paseo://h/local%20host/agent/agent%2F123");
+  assert.deepEqual(peerAgentNavigationTarget("local host", "agent/123", "web"), {
+    kind: "internal", url: "/h/local%20host/agent/agent%2F123",
+  });
+  assert.equal(new URL(peerAgentNavigationTarget("local host", "agent/123", "web").url, "paseo://app/").host, "app");
+  assert.deepEqual(peerAgentNavigationTarget("local host", "agent/123", "ios"), {
+    kind: "external", url: "paseo://h/local%20host/agent/agent%2F123",
+  });
 });
