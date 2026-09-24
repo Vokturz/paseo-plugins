@@ -35,12 +35,8 @@ export function resolveMapping(source: MappingSource, mappings: Record<string, P
   return matches.length === 1 ? { projectId: matches[0].projectId, reason: "name" } : null;
 }
 
-export type BranchChoice = { set: string } | { pending: string | null };
-
-// The branch a mapped ticket starts from once its project is already selected: the saved
+// The branch a ticket starts from once its project's branches are loaded: the saved
 // branch while it still exists, otherwise the repo default, never the previous ticket's.
-export function mappedBaseBranch(saved: string | undefined, branches: { id: string }[], defaultBranch: string | null, loading: boolean): BranchChoice {
-  if (loading) return { pending: saved ?? null };
-  if (saved && branches.some((branch) => branch.id === saved)) return { set: saved };
-  return { set: defaultBranch ?? "" };
+export function mappedBaseBranch(saved: string | undefined, branches: { id: string }[], defaultBranch: string | null): string {
+  return saved && branches.some((branch) => branch.id === saved) ? saved : defaultBranch ?? "";
 }

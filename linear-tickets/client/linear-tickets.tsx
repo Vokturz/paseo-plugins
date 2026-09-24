@@ -69,6 +69,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [baseBranch, setBaseBranch] = useState("");
   const [branches, setBranches] = useState<{ id: string; label: string }[]>([]);
   const [defaultBranch, setDefaultBranch] = useState<string | null>(null);
+  const [branchesFor, setBranchesFor] = useState<string | null>(null);
+  // A ticket's branch request, applied once branches are loaded for the selected project.
+  const [wantedBranch, setWantedBranch] = useState<{ branch?: string } | null>(null);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [branchesVersion, setBranchesVersion] = useState(0);
@@ -86,7 +89,6 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [mappingReason, setMappingReason] = useState<"saved" | "name" | null>(null);
   // The ticket whose mapping was applied or overridden by hand; the branch waits for the list.
   const mappedFor = useRef<string | null>(null);
-  const pendingBranch = useRef<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
@@ -271,33 +273,30 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const project = projects.find((item) => item.projectId === projectId);
   useEffect(() => {
     let cancelled = false;
-    setBranches([]); setDefaultBranch(null); setBaseBranch(""); setBranchesError(null);
-    if (!project || project.projectKind !== "git") { setBranchesLoading(false); return; }
+    setBranches([]); setDefaultBranch(null); setBranchesFor(null); setBaseBranch(""); setBranchesError(null);
+    if (!project || project.projectKind !== "git") { setBranchesLoading(false); setBranchesFor(projectId); return; }
     setBranchesLoading(true);
     void getBranches({ projectId: project.projectId }).then((result) => {
       if (cancelled) return;
-      const wanted = pendingBranch.current;
-      pendingBranch.current = null;
-      setBranches(result.branches); setDefaultBranch(result.defaultBranch);
-      setBaseBranch(wanted && result.branches.some((branch) => branch.id === wanted) ? wanted : result.defaultBranch ?? "");
+      setBranches(result.branches); setDefaultBranch(result.defaultBranch); setBranchesFor(project.projectId);
+      setBaseBranch(result.defaultBranch ?? "");
     }, (error) => { if (!cancelled) setBranchesError(message(error)); })
       .finally(() => { if (!cancelled) setBranchesLoading(false); });
     return () => { cancelled = true; };
   }, [project?.projectId, project?.projectKind, project?.projectRootPath, getBranches, branchesVersion]);
+  useEffect(() => {
+    if (!wantedBranch || branchesLoading || branchesFor !== projectId) return;
+    setWantedBranch(null);
+    setBaseBranch(mappedBaseBranch(wantedBranch.branch, branches, defaultBranch));
+  }, [wantedBranch, branchesLoading, branchesFor, projectId, branches, defaultBranch]);
   const mappingSource: MappingSource | null = detail ? { projectId: detail.projectId, projectName: detail.issue.project, teamId: detail.teamId, teamName: detail.issue.team } : null;
   useEffect(() => {
     if (!detail || !mappingSource || detail.issue.id !== selected?.id || !settingsLoaded || optionsLoading || mappedFor.current === selected.id) return;
     mappedFor.current = selected.id;
     const resolved = resolveMapping(mappingSource, projectMappings, projects);
     setMappingReason(resolved?.reason ?? null);
-    if (!resolved) return;
-    if (resolved.projectId === projectId) {
-      const choice = mappedBaseBranch(resolved.baseBranch, branches, defaultBranch, branchesLoading);
-      if ("set" in choice) setBaseBranch(choice.set);
-      else pendingBranch.current = choice.pending;
-      return;
-    }
-    pendingBranch.current = resolved.baseBranch ?? null;
+    setWantedBranch(resolved?.baseBranch ? { branch: resolved.baseBranch } : {});
+    if (!resolved || resolved.projectId === projectId) return;
     setProjectId(resolved.projectId); setBaseBranch(""); setBranches([]);
     // mappingSource is derived from detail; the effect runs once per opened ticket.
   }, [detail, selected, settingsLoaded, optionsLoading, projects, projectMappings]);
@@ -364,7 +363,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   };
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
-    mappedFor.current = null; pendingBranch.current = null; setMappingReason(null);
+    mappedFor.current = null; setWantedBranch(null); setMappingReason(null);
   };
   const chooseRelated = (ticket: RelatedTicket) => choose({
     id: ticket.id, identifier: ticket.identifier, title: ticket.title, url: ticket.url,
@@ -671,12 +670,12 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
             <FieldLabel title="Workspace" icon="Folder" hint="where the agent runs" t={t} />
             <ChoicePicker label="Projects" icon="Folder" placeholder="Choose a project" options={projects.map((item) => ({ id: item.projectId, label: item.projectCustomName || item.projectDisplayName, description: item.projectRootPath }))}
-              value={projectId} onChange={(id) => { mappedFor.current = selected?.id ?? null; pendingBranch.current = null; setMappingReason(null); if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} t={t} disabled={Boolean(busy) || optionsLoading} />
+              value={projectId} onChange={(id) => { mappedFor.current = selected?.id ?? null; setWantedBranch(null); setMappingReason(null); if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} t={t} disabled={Boolean(busy) || optionsLoading} />
             {mappingReason && project && <Text style={t.muted}>{mappingReason === "saved" ? `Remembered for ${mappingSource ? mappingLabel(mappingSource) : "this Linear project"}.` : "Matched by the Linear project name."} Starting an agent remembers the project you choose.</Text>}
             {!optionsLoading && !projects.length && <Callout t={t} tone="info" message="Open a project in Paseo, then reload the choices." />}
             {project?.projectKind === "git" && <>
               <FieldLabel title="Base branch" icon="GitBranch" hint="new worktree starts here" t={t} />
-              <ChoicePicker label="Branches" icon="GitBranch" placeholder="Choose a base branch" options={branches} value={baseBranch} onChange={(id) => { mappedFor.current = selected?.id ?? null; pendingBranch.current = null; setMappingReason(null); setBaseBranch(id); }} t={t} disabled={Boolean(busy) || branchesLoading} />
+              <ChoicePicker label="Branches" icon="GitBranch" placeholder="Choose a base branch" options={branches} value={baseBranch} onChange={(id) => { mappedFor.current = selected?.id ?? null; setWantedBranch(null); setMappingReason(null); setBaseBranch(id); }} t={t} disabled={Boolean(busy) || branchesLoading} />
               {branchesLoading && <ActivityIndicator color={colors.accent} />}
               {branchesError && <Callout t={t} tone="danger" message={branchesError} />}
               {!branchesLoading && !branches.length && !branchesError && <Callout t={t} tone="info" message="No branches found. The repository needs at least one commit." />}

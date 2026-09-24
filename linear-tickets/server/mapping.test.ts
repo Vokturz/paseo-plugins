@@ -35,14 +35,13 @@ test("name matching is case-insensitive, unique-only, and never applies to team 
   assert.equal(resolveMapping(source(null, "paseo-ops"), {}, projects), null);
 });
 
-test("a mapped ticket in the already-selected project starts from its saved branch or the repo default", () => {
+test("a ticket starts from its saved branch while it exists, otherwise the repo default", () => {
   const branches = [{ id: "refs/heads/main" }, { id: "refs/heads/dev" }];
-  assert.deepEqual(mappedBaseBranch("refs/heads/dev", branches, "refs/heads/main", false), { set: "refs/heads/dev" });
-  assert.deepEqual(mappedBaseBranch(undefined, branches, "refs/heads/main", false), { set: "refs/heads/main" });
-  assert.deepEqual(mappedBaseBranch("refs/heads/deleted", branches, "refs/heads/main", false), { set: "refs/heads/main" });
-  assert.deepEqual(mappedBaseBranch(undefined, branches, null, false), { set: "" });
-  assert.deepEqual(mappedBaseBranch("refs/heads/dev", [], null, true), { pending: "refs/heads/dev" });
-  assert.deepEqual(mappedBaseBranch(undefined, [], null, true), { pending: null });
+  assert.equal(mappedBaseBranch("refs/heads/dev", branches, "refs/heads/main"), "refs/heads/dev");
+  assert.equal(mappedBaseBranch(undefined, branches, "refs/heads/main"), "refs/heads/main");
+  assert.equal(mappedBaseBranch("refs/heads/deleted", branches, "refs/heads/main"), "refs/heads/main");
+  assert.equal(mappedBaseBranch(undefined, branches, null), "");
+  assert.equal(mappedBaseBranch("refs/heads/dev", [], null), "");
 });
 
 test("settings save, replace, forget and validate project mappings and the access toggle", async () => {
