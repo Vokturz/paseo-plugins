@@ -16,7 +16,7 @@ From npm, with Paseo 0.9 or newer (the pinned package and its production
 dependencies are installed for you):
 
 ```sh
-paseo plugin add npm:paseo-linear-tickets@0.3.0
+paseo plugin add npm:paseo-linear-tickets@0.4.0
 ```
 
 From a local checkout:
@@ -139,6 +139,41 @@ agent's workspace or added to its prompt. Provider badges, available modes, and 
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
 out of the form.
 
+## Project mappings
+
+Opening a ticket preselects where its agent runs. A Linear project (or, for tickets without
+one, the team) maps to a Paseo project and, for Git projects, a base branch. Starting an agent
+remembers the choice for that Linear project; until a mapping exists, a Paseo project whose
+name equals the Linear project name is preselected when exactly one matches. A choice you make
+by hand is never overridden. **Settings → Project mappings** lists the saved mappings and can
+forget them. Mappings are stored per host in `settings.json`.
+
+## Agent access to Linear
+
+Agents started from a ticket get a `linear_ticket` MCP server (on by default, **Settings →
+Agent access to Linear** turns it off). Its tools act only on the ticket the agent started from:
+
+- `get_ticket` — fresh title, description, status, the team's workflow states, comments, links;
+- `add_comment` — post a Markdown comment;
+- `set_status` — move to another state of the ticket's team by name (canceled and duplicate
+  states are left to people);
+- `link_url` — attach an https link, such as the pull request.
+
+The launch prompt tells the agent to comment when it starts and finishes, link its pull request
+and move the ticket to review; custom templates can place that note with `{{linear_access}}`,
+and it is appended when they do not. The server is a dependency-free script written to
+`$PASEO_HOME/linear-tickets/ticket-mcp-<hash>.mjs` and run with the daemon's own Node runtime
+(the desktop app's bundled runtime included), so it does not depend on `node` being on the
+agent's PATH. If the selected provider reports that it cannot load MCP servers, the launch
+returns a warning, since that agent has no Linear tools.
+The agent configuration carries only that path and the issue ID; the server reads the key at
+call time from `LINEAR_API_KEY` or the saved connection, so it needs a key with write access.
+Agents run as the same user as the daemon, so this scopes the tools, not the key: an agent
+that reads the credentials file directly is not prevented from using it. When the host sets
+`LINEAR_API_KEY` in the daemon's environment, agents and their MCP servers may inherit it, so
+an agent that reads its own environment can see the key; prefer the saved connection if that
+matters to you.
+
 ## Settings
 
 The **Settings** menu (gear icon in the header, next to the connection and refresh
@@ -171,6 +206,13 @@ Templates are limited to 8,000 characters, stored per host with the other plugin
 and apply to new agents only. **Reset to built-in** restores the default. The per-launch
 instructions field and the 200,000-character context limit apply as before.
 
+`{{linear_access}}` places the note about Linear access: with **Agent access to Linear** on,
+the agent is told to use its ticket tools; with it off, not to write to Linear. A template
+without the placeholder gets the note appended. Templates saved from the built-in default
+before 0.4.0 contain the old sentence "Do not post comments or change Linear status unless
+the user explicitly asks."; that sentence is treated as the placeholder, so the toggle
+decides rather than the saved wording.
+
 ## Marking tickets In Progress
 
 By default the plugin never changes Linear. When you switch on **Mark the ticket In
@@ -181,6 +223,8 @@ otherwise the first started state in the team's workflow. Tickets already in a s
 state are left as they are, and a team without a started state never produces a write.
 The choice is saved per host and needs Linear's write permission. If the change cannot
 be made, the agent still starts and the failure appears as a warning with the result.
+The transition is made just before the agent is created, so with agent access to Linear on,
+any status change the agent makes itself always comes after it.
 
 ## Connection storage
 

@@ -13,6 +13,7 @@ import { tokensFor } from "./design";
 import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
 import { restoreLaunchSelection, type LaunchPreference } from "./launch-preferences";
+import { mappedBaseBranch, mappingKey, mappingLabel, resolveMapping, type MappingSource, type ProjectMapping } from "../shared/mapping";
 
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
 type ModelChoice = { id: string; label: string; provider: string; description?: string; thinkingOptions: ThinkingOption[]; defaultThinkingOptionId?: string };
@@ -67,6 +68,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [projectId, setProjectId] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
   const [branches, setBranches] = useState<{ id: string; label: string }[]>([]);
+  const [defaultBranch, setDefaultBranch] = useState<string | null>(null);
+  const [branchesFor, setBranchesFor] = useState<string | null>(null);
+  // A ticket's branch request, applied once branches are loaded for the selected project.
+  const [wantedBranch, setWantedBranch] = useState<{ branch?: string } | null>(null);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const [branchesVersion, setBranchesVersion] = useState(0);
@@ -79,6 +84,11 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [launchPreferences, setLaunchPreferences] = useState<Record<string, LaunchPreference>>({});
   const [lastProvider, setLastProvider] = useState<string | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [projectMappings, setProjectMappings] = useState<Record<string, ProjectMapping>>({});
+  const [agentLinearAccess, setAgentLinearAccess] = useState(true);
+  const [mappingReason, setMappingReason] = useState<"saved" | "name" | null>(null);
+  // The ticket whose mapping was applied or overridden by hand; the branch waits for the list.
+  const mappedFor = useRef<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
@@ -194,6 +204,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     void getSettings({}).then((value) => {
       setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed);
       setLaunchPreferences(value.launchPreferences); setLastProvider(value.lastProvider);
+      setProjectMappings(value.projectMappings); setAgentLinearAccess(value.agentLinearAccess);
     }, () => {}).finally(() => setSettingsLoaded(true));
   }, [getSettings]);
 
@@ -262,15 +273,33 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const project = projects.find((item) => item.projectId === projectId);
   useEffect(() => {
     let cancelled = false;
-    setBranches([]); setBaseBranch(""); setBranchesError(null);
-    if (!project || project.projectKind !== "git") { setBranchesLoading(false); return; }
+    setBranches([]); setDefaultBranch(null); setBranchesFor(null); setBaseBranch(""); setBranchesError(null);
+    if (!project || project.projectKind !== "git") { setBranchesLoading(false); setBranchesFor(projectId); return; }
     setBranchesLoading(true);
     void getBranches({ projectId: project.projectId }).then((result) => {
-      if (!cancelled) { setBranches(result.branches); setBaseBranch(result.defaultBranch ?? ""); }
+      if (cancelled) return;
+      setBranches(result.branches); setDefaultBranch(result.defaultBranch); setBranchesFor(project.projectId);
+      setBaseBranch(result.defaultBranch ?? "");
     }, (error) => { if (!cancelled) setBranchesError(message(error)); })
       .finally(() => { if (!cancelled) setBranchesLoading(false); });
     return () => { cancelled = true; };
   }, [project?.projectId, project?.projectKind, project?.projectRootPath, getBranches, branchesVersion]);
+  useEffect(() => {
+    if (!wantedBranch || branchesLoading || branchesFor !== projectId) return;
+    setWantedBranch(null);
+    setBaseBranch(mappedBaseBranch(wantedBranch.branch, branches, defaultBranch));
+  }, [wantedBranch, branchesLoading, branchesFor, projectId, branches, defaultBranch]);
+  const mappingSource: MappingSource | null = detail ? { projectId: detail.projectId, projectName: detail.issue.project, teamId: detail.teamId, teamName: detail.issue.team } : null;
+  useEffect(() => {
+    if (!detail || !mappingSource || detail.issue.id !== selected?.id || !settingsLoaded || optionsLoading || mappedFor.current === selected.id) return;
+    mappedFor.current = selected.id;
+    const resolved = resolveMapping(mappingSource, projectMappings, projects);
+    setMappingReason(resolved?.reason ?? null);
+    setWantedBranch(resolved?.baseBranch ? { branch: resolved.baseBranch } : {});
+    if (!resolved || resolved.projectId === projectId) return;
+    setProjectId(resolved.projectId); setBaseBranch(""); setBranches([]);
+    // mappingSource is derived from detail; the effect runs once per opened ticket.
+  }, [detail, selected, settingsLoaded, optionsLoading, projects, projectMappings]);
   const providerGroups = [...new Set(models.map((model) => model.provider))];
   const selectedModel = models.find((model) => model.id === provider);
   const activeModes = modes[providerGroup] ?? [];
@@ -334,6 +363,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   };
   const choose = (issue: Issue) => {
     setSelected(issue); setAgent(null); setError(null); setInstructions(""); launchRequest.current = null;
+    mappedFor.current = null; setWantedBranch(null); setMappingReason(null);
   };
   const chooseRelated = (ticket: RelatedTicket) => choose({
     id: ticket.id, identifier: ticket.identifier, title: ticket.title, url: ticket.url,
@@ -350,9 +380,13 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     const launchPreference = { model: provider, ...(modeId ? { modeId } : {}), ...(thinkingOptionId ? { thinkingOptionId } : {}) };
     setLaunchPreferences((previous) => ({ ...previous, [providerGroup]: launchPreference }));
     setLastProvider(providerGroup);
-    void saveSettings({ launchPreference: { provider: providerGroup, ...launchPreference } }).catch(() => {
-      setOptionsError("Agent started, but its model choices could not be remembered.");
-    });
+    // One patch per launch: the model choice and the project mapping are saved together.
+    const key = mappingSource ? mappingKey(mappingSource) : null;
+    const projectMapping = key && mappingSource ? { key, projectId, label: mappingLabel(mappingSource), ...(project?.projectKind === "git" && baseBranch ? { baseBranch } : {}) } : undefined;
+    void saveSettings({ launchPreference: { provider: providerGroup, ...launchPreference }, ...(projectMapping ? { projectMapping } : {}) })
+      .then((saved) => setProjectMappings(saved.projectMappings), () => {
+        setOptionsError("Agent started, but its model and project choices could not be remembered.");
+      });
     setLinkedAgents((previous) => previous.some((item) => item.id === result.agentId) ? previous : [{ id: result.agentId, title: `${selected.identifier}: ${selected.title}`, status: "initializing", updatedAt: new Date().toISOString() }, ...previous]);
   });
   const copyContext = () => {
@@ -437,11 +471,33 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       })} />
     <Text style={t.muted}>Off keeps the list focused on open work; finished, canceled and duplicated tickets stay hidden from the list and the counts.</Text>
     <Divider t={t} spaced />
+    <FieldLabel title="Agent access to Linear" icon="KeyRound" hint="for agents started from a ticket" t={t} />
+    <Button title={agentLinearAccess ? "Agents can comment on, move and link their own ticket" : "Agents cannot change Linear"} icon={agentLinearAccess ? "Check" : "CircleDashed"} stretch chosen={agentLinearAccess}
+      onPress={() => void run("Saving setting", async () => {
+        const next = !agentLinearAccess;
+        setAgentLinearAccess(next);
+        setAgentLinearAccess((await saveSettings({ agentLinearAccess: next })).agentLinearAccess);
+      })} />
+    <Text style={t.muted}>On gives each new agent linear_ticket tools that act only on the ticket it started from, using this host's Linear key; canceling or marking duplicate stays with people. It needs a key with write access. Existing agents keep what they started with.</Text>
+    <Divider t={t} spaced />
+    <FieldLabel title="Project mappings" icon="Folder" hint="Linear project → Paseo project" t={t} />
+    {Object.keys(projectMappings).length ? Object.entries(projectMappings).sort((a, b) => a[1].label.localeCompare(b[1].label)).map(([key, mapping]) => {
+      const target = projects.find((item) => item.projectId === mapping.projectId);
+      const targetName = target ? target.projectCustomName || target.projectDisplayName : "Project no longer in Paseo";
+      const branch = mapping.baseBranch ? ` · ${mapping.baseBranch.replace(/^refs\/(heads|remotes)\//, "")}` : "";
+      return <View key={key} style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <Text style={{ ...t.strong, flex: 1, minWidth: 160 }} numberOfLines={1}>{mapping.label} → {targetName}{branch}</Text>
+        <Button title="Forget" icon="X" size="sm" onPress={() => void run("Saving setting", async () => {
+          setProjectMappings((await saveSettings({ forgetProjectMapping: key })).projectMappings);
+        })} />
+      </View>;
+    }) : <Text style={t.muted}>None yet. Starting an agent from a ticket remembers its project and base branch for that Linear project; until then a Paseo project with the same name is preselected.</Text>}
+    <Divider t={t} spaced />
     <FieldLabel title="Default prompt" icon="PenLine" hint="the system prompt used when you start an agent" t={t} />
     {templateOpen ? <View style={{ gap: 8 }}>
       <TextInput accessibilityLabel="Default prompt template" editable={!busy} multiline maxLength={8000} value={templateText} onChangeText={setTemplateText}
         placeholder="How the agent should work on this ticket…" placeholderTextColor={colors.foregroundMuted} style={{ ...t.mono, minHeight: 120, textAlignVertical: "top" }} />
-      <Text style={t.muted}>Placeholders: {"{{ticket}}"} = ticket ID and title · {"{{instructions}}"} = the extra direction you type at launch · {"{{context}}"} = the ticket snapshot (required).</Text>
+      <Text style={t.muted}>Placeholders: {"{{ticket}}"} = ticket ID and title · {"{{instructions}}"} = the extra direction you type at launch · {"{{context}}"} = the ticket snapshot (required) · {"{{linear_access}}"} = what the agent may change in Linear (appended when missing).</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <Button title="Save default prompt" icon="Check" onPress={() => void run("Saving default prompt", async () => {
           const result = await saveTemplate({ template: templateText });
@@ -614,16 +670,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
 
             <FieldLabel title="Workspace" icon="Folder" hint="where the agent runs" t={t} />
             <ChoicePicker label="Projects" icon="Folder" placeholder="Choose a project" options={projects.map((item) => ({ id: item.projectId, label: item.projectCustomName || item.projectDisplayName, description: item.projectRootPath }))}
-              value={projectId} onChange={(id) => { if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} t={t} disabled={Boolean(busy) || optionsLoading} />
+              value={projectId} onChange={(id) => { mappedFor.current = selected?.id ?? null; setWantedBranch(null); setMappingReason(null); if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} t={t} disabled={Boolean(busy) || optionsLoading} />
+            {mappingReason && project && <Text style={t.muted}>{mappingReason === "saved" ? `Remembered for ${mappingSource ? mappingLabel(mappingSource) : "this Linear project"}.` : "Matched by the Linear project name."} Starting an agent remembers the project you choose.</Text>}
             {!optionsLoading && !projects.length && <Callout t={t} tone="info" message="Open a project in Paseo, then reload the choices." />}
             {project?.projectKind === "git" && <>
               <FieldLabel title="Base branch" icon="GitBranch" hint="new worktree starts here" t={t} />
-              <ChoicePicker label="Branches" icon="GitBranch" placeholder="Choose a base branch" options={branches} value={baseBranch} onChange={setBaseBranch} t={t} disabled={Boolean(busy) || branchesLoading} />
+              <ChoicePicker label="Branches" icon="GitBranch" placeholder="Choose a base branch" options={branches} value={baseBranch} onChange={(id) => { mappedFor.current = selected?.id ?? null; setWantedBranch(null); setMappingReason(null); setBaseBranch(id); }} t={t} disabled={Boolean(busy) || branchesLoading} />
               {branchesLoading && <ActivityIndicator color={colors.accent} />}
               {branchesError && <Callout t={t} tone="danger" message={branchesError} />}
               {!branchesLoading && !branches.length && !branchesError && <Callout t={t} tone="info" message="No branches found. The repository needs at least one commit." />}
               <Text style={t.muted}>Creates a new ticket branch in its own worktree from this branch. Remote branches use the locally fetched version.</Text>
-              <Button title="Refresh branches" icon="RefreshCw" size="sm" disabled={branchesLoading} onPress={() => setBranchesVersion((value) => value + 1)} />
+              <Button title="Refresh branches" icon="RefreshCw" size="sm" disabled={branchesLoading} onPress={() => { setWantedBranch({ ...(baseBranch ? { branch: baseBranch } : {}) }); setBranchesFor(null); setBranchesVersion((value) => value + 1); }} />
             </>}
             {project && project.projectKind !== "git" && <Text style={t.muted}>The agent will work in this project’s directory.</Text>}
 

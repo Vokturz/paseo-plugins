@@ -273,6 +273,7 @@ export class LinearService {
       const issue = normalizeIssue(issueData);
       const viewerId = data.viewer && typeof data.viewer === "object" ? label((data.viewer as { id?: unknown }).id) : "";
       const teamId = label(record(issueData.team ?? {}).id) || null;
+      const projectId = label(record(issueData.project ?? {}).id) || null;
       const warnings: string[] = [];
       let comments: unknown[] = [];
       try {
@@ -287,7 +288,7 @@ export class LinearService {
         comments = [];
         warnings.push("Comments could not be loaded; only the ticket details are included.");
       }
-      return { issue, teamId, warnings, relations: ticketRelations(issueData, viewerId), context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
+      return { issue, teamId, projectId, warnings, relations: ticketRelations(issueData, viewerId), context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
     });
   }
 

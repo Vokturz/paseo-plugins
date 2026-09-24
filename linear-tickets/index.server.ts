@@ -49,8 +49,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getSettingsRpc, async () => ({ ...(await settings.read()), builtin: DEFAULT_PROMPT_TEMPLATE }));
   server.handle(setSettingsRpc, async (input) => ({ ...(await settings.patch(input)), builtin: DEFAULT_PROMPT_TEMPLATE }));
   server.handle(launchAgentRpc, async (input, { paseo }) => {
-    const { template } = await settings.read();
-    return launcher.start(input, paseo, { promptTemplate: template ?? undefined, markInProgress: input.markInProgress });
+    const { template, agentLinearAccess } = await settings.read();
+    return launcher.start(input, paseo, { promptTemplate: template ?? undefined, markInProgress: input.markInProgress, linearAccess: agentLinearAccess });
   });
   return () => {};
 }
