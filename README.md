@@ -1,6 +1,6 @@
 # Paseo plugins
 
-Plugins that extend the [Paseo](https://paseo.sh) sidebar, surfaces and command center.
+Plugins that extend [Paseo](https://paseo.sh) with sidebar views, agent tools, and chat cards.
 Each plugin lives in its own folder and is installed independently. See the
 [plugin documentation](https://paseo.sh/docs/plugins) for the plugin API.
 
@@ -9,6 +9,7 @@ Each plugin lives in its own folder and is installed independently. See the
 | Plugin | Description | Requires |
 | --- | --- | --- |
 | [linear-tickets](./linear-tickets) | Connects to Linear's GraphQL API (read queries; optionally marks a ticket In Progress on launch), lists the tickets assigned to you, highlights blockers, and shows parent, subissue, and related tickets regardless of assignee. Filter by workflow status or dependency, search, sort, then pick a project, base branch, provider and model before launching. The launch prompt is customizable per host. | Paseo ≥ 0.8.0, Node.js ≥ 22 on the daemon host |
+| [peer-agents](./peer-agents) | Lets agents choose a registered project, create an independent peer in a new workspace, and exchange messages with injected MCP tools. | Paseo ≥ 0.9.1 < 0.10.0, Node.js ≥ 22 and Paseo CLI on the daemon host |
 
 ## Install
 

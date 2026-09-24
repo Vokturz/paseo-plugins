@@ -1,0 +1,5 @@
+{
+  "id": "peer-agents",
+  "description": "Let agents create independent peers in new workspaces of registered projects and exchange messages.",
+  "requirements": { "paseo": ">=0.9.1 <0.10.0" }
+}
