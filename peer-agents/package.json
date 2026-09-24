@@ -9,7 +9,7 @@
     "directory": "peer-agents"
   },
   "type": "module",
-  "files": ["npm-shrinkwrap.json", "paseo-plugin.json", "index.client.tsx", "index.server.ts", "client/", "server/", "shared/", "README.md", "LICENSE"],
+  "files": ["npm-shrinkwrap.json", "paseo-plugin.json", "index.client.tsx", "index.server.ts", "client/", "server/", "shared/", "images/", "README.md", "LICENSE"],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs"

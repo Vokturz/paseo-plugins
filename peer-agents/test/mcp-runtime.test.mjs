@@ -56,6 +56,7 @@ child.on("exit", () => process.exit());`;
       PATH: `${directory}:${process.env.PATH ?? ""}`,
       PEER_TEST_LOG: logPath,
       PASEO_AGENT_ID: agentId,
+      PASEO_PEER_AGENT_ID: "",
       PEER_TEST_RUN_ERROR: behavior.runError ? "1" : "0",
       PEER_TEST_LIST_ERROR: behavior.listError ? "1" : "0",
       PEER_TEST_EXISTING_AGENT: behavior.existingAgent ? "1" : "0",

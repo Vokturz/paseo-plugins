@@ -1,11 +1,14 @@
 import { Linking } from "react-native";
-import { peerAgentAppLink, peerAgentRoute } from "../shared/agent-link";
+import { peerAgentNavigationTarget } from "../shared/agent-link";
 
 export function openPeerAgent(serverId: string, agentId: string, platform: "ios" | "android" | "web") {
-  const route = peerAgentRoute(serverId, agentId);
-  if (platform === "web" && (window.location.protocol === "http:" || window.location.protocol === "https:")) {
-    window.location.assign(route);
+  const target = peerAgentNavigationTarget(serverId, agentId, platform);
+  if (target.kind === "internal") {
+    // Electron serves the app from paseo://app/. Opening a paseo://h/... URL
+    // through Linking launches another window on the wrong protocol host.
+    // A relative route stays inside the current app on desktop and browser.
+    window.location.assign(target.url);
     return;
   }
-  void Linking.openURL(peerAgentAppLink(serverId, agentId));
+  void Linking.openURL(target.url);
 }

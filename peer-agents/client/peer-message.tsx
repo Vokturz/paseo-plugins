@@ -3,6 +3,8 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
 import { z } from "zod";
 import { openPeerAgent } from "./agent-link";
+import { tokensFor } from "./design";
+import { MarkdownPreview } from "./markdown-preview";
 import { parsePeerMessage } from "../shared/peer-message";
 
 export { parsePeerMessage };
@@ -13,6 +15,7 @@ export const peerMessageSchema = z.object({
 });
 
 export function PeerMessageCard({ item, theme, host, layout }: PluginTimelineItemProps<z.output<typeof peerMessageSchema>>) {
+  const tokens = tokensFor(theme, layout);
   return (
     <View style={{
       alignSelf: "stretch",
@@ -30,7 +33,7 @@ export function PeerMessageCard({ item, theme, host, layout }: PluginTimelineIte
           <Text style={{ color: theme.colors.accent, fontSize: 12 }}>Open agent ↗</Text>
         </Pressable>
       </View>
-      <Text selectable style={{ color: theme.colors.foreground }}>{item.data.message}</Text>
+      <MarkdownPreview markdown={item.data.message} t={tokens} platform={layout.platform} />
     </View>
   );
 }
