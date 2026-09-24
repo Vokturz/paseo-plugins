@@ -1,0 +1,26 @@
+{
+  "name": "paseo-peer-agents",
+  "version": "0.1.0",
+  "description": "Agent-facing tools for independent Paseo peers and cross-workspace messaging.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vokturz/paseo-plugins.git",
+    "directory": "peer-agents"
+  },
+  "type": "module",
+  "files": ["npm-shrinkwrap.json", "paseo-plugin.json", "index.client.tsx", "index.server.ts", "client/", "server/", "shared/", "README.md", "LICENSE"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.9.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}
