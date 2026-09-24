@@ -1,6 +1,6 @@
 # Linear → Paseo project mapping, and ticket-scoped Linear access for agents
 
-Fork branch `feat/linear-project-mapping` of Vokturz/paseo-plugins (fork: hteo1337/vokturz-paseo-plugins).
+Branch `feat/linear-project-mapping` of Vokturz/paseo-plugins.
 Asked by Teo on 2026-09-24: "map workspaces with Paseo Linear so agents can work on Linear tasks", scope chosen
 "mapping + agents update Linear", location chosen "fork, install from path".
 
@@ -41,11 +41,11 @@ Out of scope: auto-starting agents from Linear, acting on other tickets, and age
 
 1. mapping resolver + tests  2. settings fields + tests  3. detail projectId  4. MCP server + tests (fake Linear)
 5. launch injection + prompt + tests  6. client wiring  7. typecheck, test, compile via `paseo plugin install`
-8. Astra review (credential handling) → fix  9. switch the host install from npm to this path on m5 and M4, verify.
+8. adversarial review (credential handling) → fix  9. switch a host install from npm to a local path install, verify.
 
 ## Acceptance
 
-- Opening a paseo-ops ticket preselects Paseo project `paseo-ops` with its default branch, with no saved mapping.
+- Opening a ticket whose Linear project name uniquely matches a Paseo project preselects it with its default branch, with no saved mapping.
 - After launching into project X from Linear project P, the next P ticket preselects X and the same branch.
 - A launched agent lists the `linear_ticket` tools; `get_ticket` returns its issue; `add_comment` posts to that issue only;
   `set_status` with an unknown or other-team state is refused; a key never appears in `~/.paseo/agents` records.
@@ -63,6 +63,6 @@ Out of scope: auto-starting agents from Linear, acting on other tickets, and age
 
 ```bash
 cd linear-tickets && npm run typecheck && npm test
-paseo plugin install /Users/hteo/Work/GitHub/hteo1337/vokturz-paseo-plugins/linear-tickets --id linear-tickets
+paseo plugin install ./linear-tickets --id linear-tickets
 paseo plugin ls | grep linear-tickets ; paseo plugin logs linear-tickets
 ```

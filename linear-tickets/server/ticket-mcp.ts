@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { TICKET_MCP_SOURCE } from "./ticket-mcp-source";
 
 export const TICKET_MCP_NAME = "linear_ticket";
-export type TicketMcpServer = { type: "stdio"; command: string; args: string[] };
+export type TicketMcpServer = { type: "stdio"; command: string; args: string[]; env?: Record<string, string> };
+export type Runtime = { execPath: string; electron: boolean };
+const daemonRuntime: Runtime = { execPath: process.execPath, electron: Boolean(process.versions.electron) };
 
 export function paseoHome(): string {
   return process.env.PASEO_HOME?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".paseo");
@@ -36,6 +38,8 @@ async function reusable(path: string, source: string): Promise<boolean> {
 }
 
 // Only the issue id and a path go into the saved agent config; the key is read at call time.
-export function ticketMcpServer(scriptPath: string, issueId: string, home = paseoHome()): TicketMcpServer {
-  return { type: "stdio", command: "node", args: [scriptPath, "--issue", issueId, "--paseo-home", home] };
+// The daemon's own runtime avoids the agent's PATH; under Electron it runs as Node only with ELECTRON_RUN_AS_NODE.
+export function ticketMcpServer(scriptPath: string, issueId: string, home = paseoHome(), runtime = daemonRuntime): TicketMcpServer {
+  const server: TicketMcpServer = { type: "stdio", command: runtime.execPath, args: [scriptPath, "--issue", issueId, "--paseo-home", home] };
+  return runtime.electron ? { ...server, env: { ELECTRON_RUN_AS_NODE: "1" } } : server;
 }

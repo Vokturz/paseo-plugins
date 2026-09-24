@@ -234,7 +234,10 @@ export function buildPrompt(detail: string | TicketDetail, instructions: string,
     ].filter(Boolean).join("\n\n");
   }
   const ticket = typeof detail === "string" ? "" : `${detail.issue.identifier}: ${detail.issue.title}`;
-  const withAccess = template.includes("{{linear_access}}") || !linearAccess ? template : `${template}\n\n{{linear_access}}`;
+  // A template saved before {{linear_access}} existed carries the old no-write sentence;
+  // it becomes the placeholder so the toggle decides, and a template without one gets it appended.
+  const current = template.includes("{{linear_access}}") ? template : template.replace(NO_LINEAR_ACCESS_NOTE, "{{linear_access}}");
+  const withAccess = current.includes("{{linear_access}}") ? current : `${current}\n\n{{linear_access}}`;
   const rendered = withAccess
     .replaceAll("{{linear_access}}", accessNote)
     .replaceAll("{{ticket}}", ticket)

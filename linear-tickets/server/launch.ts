@@ -108,6 +108,18 @@ export class Launcher {
         }
       }
     }
+    const warnings = [...detail.warnings];
+    if (options.markInProgress) {
+      // Best-effort, and before the agent exists so its own set_status calls always come
+      // after this one. A failed transition only warns; the request dedupe above keeps a
+      // retried identical launch from re-running it.
+      try {
+        const outcome = await this.linear.markInProgress(detail.issue, detail.teamId);
+        if (!outcome.changed && outcome.note) warnings.push(outcome.note);
+      } catch (error) {
+        warnings.push(`Could not mark the ticket in progress: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+    }
     const agent = await workspace.agents.create({
       config: { provider: input.provider, modeId: input.modeId, thinkingOptionId: input.thinkingOptionId, ...(mcpServers ? { mcpServers } : {}) },
       title,
@@ -118,17 +130,8 @@ export class Launcher {
     }).catch(() => {
       throw new Error("Agent creation could not be confirmed. Check the workspace's agents before reopening this ticket to try again.");
     });
-    const warnings = [...detail.warnings];
-    if (options.markInProgress) {
-      // Best-effort: the agent already exists, so a failed transition degrades to a
-      // warning instead of failing the launch. The requestId/fingerprint dedupe above
-      // also means a retried identical launch does not re-run the mutation.
-      try {
-        const outcome = await this.linear.markInProgress(detail.issue, detail.teamId);
-        if (!outcome.changed && outcome.note) warnings.push(outcome.note);
-      } catch (error) {
-        warnings.push(`Could not mark the ticket in progress: ${error instanceof Error ? error.message : "unknown error"}`);
-      }
+    if (mcpServers && agent.capabilities?.supportsMcpServers === false) {
+      warnings.push("This provider does not load MCP servers, so the agent has no Linear tools. It was still told about them; choose another provider to let it update the ticket.");
     }
     return { agentId: agent.id, warnings };
   }
