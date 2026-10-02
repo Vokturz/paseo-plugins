@@ -26,6 +26,9 @@ export default function contribute(server: PluginServerContext) {
             type: "stdio",
             command: process.execPath,
             args: ["-e", command],
+            // Desktop runs plugin workers through Electron. Providers such as
+            // Codex filter inherited env, so explicitly retain Node mode.
+            env: { ELECTRON_RUN_AS_NODE: "1" },
             alwaysLoad: true,
           },
         },
