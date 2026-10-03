@@ -1,5 +1,5 @@
 {
   "id": "peer-agents",
-  "requirements": { "paseo": ">=0.9.1 <0.10.0" },
+  "requirements": { "paseo": ">=0.9.1 <0.11.0" },
   "build": [["npm", "ci", "--include=dev"]]
 }
