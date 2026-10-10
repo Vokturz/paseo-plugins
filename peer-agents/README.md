@@ -15,12 +15,12 @@ The plugin injects its tools into new Claude, Codex, and OpenCode sessions and p
 
 ## Install
 
-Requires Paseo 0.9.1 or newer in the 0.9 or 0.10 line, Node.js 22 or newer, and a `paseo` CLI on the daemon host's `PATH` that connects to the same daemon as the agent. If the daemon uses a nondefault host or home, set `PASEO_HOST` or `PASEO_HOME` in the daemon's environment so the injected MCP process uses the same target.
+Requires Paseo 0.9.1 or newer, Node.js 22 or newer, and a `paseo` CLI on the daemon host's `PATH` that connects to the same daemon as the agent. If the daemon uses a nondefault host or home, set `PASEO_HOST` or `PASEO_HOME` in the daemon's environment so the injected MCP process uses the same target.
 
 From npm:
 
 ```sh
-paseo plugin add npm:paseo-peer-agents@0.1.3
+paseo plugin add npm:paseo-peer-agents@0.1.4
 ```
 
 From a local checkout:
