@@ -13,7 +13,7 @@ function date(value: string) {
   return Number.isNaN(parsed.getTime()) ? "Unknown" : parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function GitHubReviewsSurface({ theme, layout }: PluginSurfaceProps) {
+export function GitHubReviewsSurface({ theme, layout, onOpenReviewer }: PluginSurfaceProps & { onOpenReviewer?: () => void }) {
   const list = useRpc(listReviewsRpc);
   const settings = useSettings(filterSettings);
   const settingsRevision = settings.status === "ready" ? settings.revision : null;
@@ -108,6 +108,7 @@ export function GitHubReviewsSurface({ theme, layout }: PluginSurfaceProps) {
           <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{scope === "created" ? "Open pull requests you created" : "Open pull requests awaiting your review"}</Text>
         </View>
         {loading && <ActivityIndicator accessibilityLabel="Loading pull requests" size="small" color={c.accent} />}
+        {onOpenReviewer && button("Reviewer setup", onOpenReviewer, false, "Bot")}
         {button("Refresh", () => void load(currentPage.current), loading, "RefreshCw")}
       </View>
 

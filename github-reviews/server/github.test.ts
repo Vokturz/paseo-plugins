@@ -5,6 +5,7 @@ import contribute from "../index.server";
 import { listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
 import { commandError, GitHubReviews, type RunGh } from "./github";
 import { filterSettings, filtersSchema } from "../shared/filters";
+import { reviewerSettings } from "../shared/reviewer";
 
 function pullRequest(number = 42) {
   return {
@@ -188,7 +189,7 @@ test("registers the list and owner RPCs with the Paseo server", () => {
     handle(contract: unknown) { contracts.push(contract); },
   } as unknown as PluginServerContext);
   assert.deepEqual(contracts, [listReviewsRpc, listOwnersRpc]);
-  assert.deepEqual(settings, [filterSettings]);
+  assert.deepEqual(settings, [filterSettings, reviewerSettings]);
   cleanup();
 });
 

@@ -59,6 +59,42 @@ including drafts, regardless of review requests. Merged and closed PRs are
 excluded. Switching tabs starts at page one and clears the previous list;
 responses from the previous tab cannot overwrite the newly selected list.
 
+## Reviewer setup
+
+Select **Reviewer setup** in the PR list header, or **Configure GitHub reviewer**
+in the command center, to open a separate view for your reviewer configuration.
+The form follows Linear tickets' design: provider chips with brand marks, a
+searchable model dropdown, matching cards and buttons, and a stacked mobile layout.
+
+Choose a provider, then select one of its available models. Models are loaded
+from the Paseo host's configured providers, with search and **Reload models**
+controls. Unavailable saved models are shown explicitly and are never replaced
+automatically. If one provider's catalog fails, models from other providers
+remain available.
+
+Use **Agent mode** to select a provider's execution mode, such as Claude's
+**Auto mode**, or leave **Provider default** selected to use the host's default.
+The **Reasoning** selector shows the selected model's advertised reasoning
+levels; **Model default** leaves that choice to the model. These controls use
+the same dropdowns as Linear tickets. Reasoning is hidden for models that do
+not advertise it. Switching providers clears mode and reasoning choices;
+switching models preserves a reasoning level only when the new model supports
+it. Unavailable saved choices are shown explicitly and must be changed before
+saving. Older saved setups keep their model and prompt and use default values
+for the new controls.
+
+Edit the multiline **Review prompt** to describe what to check and how to
+report findings. A default prompt covers actionable bugs, regressions,
+security, verification, and file/line references. **Restore default prompt**
+replaces the draft; **Save reviewer setup** persists your selected provider,
+model, agent mode, reasoning, and prompt together. Prompts must be nonempty and are limited to 16,000
+characters. **Discard changes** restores the last saved setup.
+
+Reviewer configuration uses a separate local, host-scoped settings document,
+shared by both PR tabs and preserved across reloads and restarts. Concurrent
+edits use revision checks. This view configures the reviewer for future review
+runs; saving it does not launch an agent or publish anything to GitHub.
+
 ## Local filters
 
 Open **Filters → Edit filters** to narrow both tabs:
@@ -120,4 +156,6 @@ pagination and search caps, empty and partial results, response validation, erro
 redaction, owner and rolling time filters, filter validation, local settings
 registration and reads, owner discovery and pagination, preservation of saved
 owner and time selections, and RPC registration. Live authentication and browser
-handoff need a configured Paseo host.
+handoff need a configured Paseo host. Reviewer tests cover prompt validation,
+model identifier preservation, selectable model discovery, partial provider
+failures, and unavailable saved selections.
