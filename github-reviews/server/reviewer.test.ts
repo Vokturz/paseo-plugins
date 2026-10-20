@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DEFAULT_REVIEW_PROMPT, MAX_REVIEW_PROMPT_LENGTH, reviewerSchema, reviewerSettings } from "../shared/reviewer";
-import { loadReviewerModels, reasoningForModel, reviewerOptionsIssue, selectedReviewerModel, type ReviewerModel } from "../client/reviewer-models";
+import { loadReviewerModels, reasoningForModel, reviewerOptionsIssue, selectedReviewerModel, type ReviewerModel } from "../shared/reviewer-models";
 
 type Source = Parameters<typeof loadReviewerModels>[0];
 

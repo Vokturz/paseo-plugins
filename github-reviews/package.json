@@ -1,7 +1,7 @@
 {
   "name": "paseo-github-reviews",
   "version": "0.1.0",
-  "description": "Paseo sidebar listing GitHub pull requests awaiting your review or created by you.",
+  "description": "Paseo sidebar listing GitHub pull requests requested for review, already reviewed by you, or created by you.",
   "license": "MIT",
   "repository": {
     "type": "git",

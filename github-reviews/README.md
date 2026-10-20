@@ -1,8 +1,9 @@
 # GitHub reviews
 
-A Paseo sidebar view with **Review requested** and **Created by me** tabs for open
+A Paseo sidebar view with **My reviews** and **Created by me** tabs for open
 GitHub pull requests. Lists the repository, PR number, title, author, labels,
-draft status and last update. Select a row to open the PR in your browser.
+draft status and last update. Select a PR title to open it in your browser, or
+start a reviewer agent in a matching local project.
 
 ## Install
 
@@ -46,18 +47,39 @@ this first version.
 ## What appears
 
 The plugin queries GitHub's [search API](https://docs.github.com/en/rest/search/search#search-issues-and-pull-requests)
-across all accessible repositories. **Review requested** (the default tab) uses
-`is:pr is:open review-requested:LOGIN`.
+across all accessible repositories. **My reviews** (the default tab) uses
+`is:pr is:open (review-requested:LOGIN OR reviewed-by:LOGIN)` with advanced search.
 As documented in [GitHub search](https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests#search-by-pull-request-review-status-and-reviewer),
-this includes requests directed to you and teams you belong to. It shows pending
-requests, rather than every PR you have ever reviewed. PRs leave the results when
-the request is satisfied, removed, or the PR closes; changes can take time to
-appear in GitHub's search index.
+this includes requests directed to you or your teams and PRs you have already
+reviewed. PRs you have reviewed stay in the list while they remain open and match your
+saved filters. Changes can take time to appear in
+GitHub's search index. The existing `review-requested` RPC scope ID is preserved
+for compatibility.
 
 **Created by me** uses `is:pr is:open author:LOGIN` to show your own open PRs,
 including drafts, regardless of review requests. Merged and closed PRs are
 excluded. Switching tabs starts at page one and clears the previous list;
 responses from the previous tab cannot overwrite the newly selected list.
+
+## Local projects
+
+Each PR shows whether its repository has a registered Paseo project on this
+daemon host. Matching projects appear as **Project: name**, using the custom
+project name when one is set. If multiple projects point to the same repository,
+all are shown. **No local project** means none of the checked projects match.
+If the host's projects or a checkout cannot be inspected, the row shows
+**Project check unavailable** instead of claiming the project is missing.
+
+Matching uses the full GitHub `owner/repository` identity from each Git project's
+configured remotes. It supports HTTPS, SSH, renamed checkout folders, and
+worktrees. Projects with similar names or repositories belonging to different
+owners are not guessed as matches. Non-Git directory projects are excluded;
+SSH host aliases that do not identify `github.com` are not resolved.
+
+Project availability is refreshed with the PR list. Checks only read local Git
+configuration, with bounded parallelism and timeouts; they do not fetch, clone,
+or modify repositories. The project registry belongs to the selected Paseo
+host, including when viewing it from a phone or another computer.
 
 ## Reviewer setup
 
@@ -92,8 +114,43 @@ characters. **Discard changes** restores the last saved setup.
 
 Reviewer configuration uses a separate local, host-scoped settings document,
 shared by both PR tabs and preserved across reloads and restarts. Concurrent
-edits use revision checks. This view configures the reviewer for future review
-runs; saving it does not launch an agent or publish anything to GitHub.
+edits use revision checks. Saving it does not launch an agent or publish anything
+to GitHub.
+
+## Start a review
+
+Save a model in **Reviewer setup**, then select **Start review** on a PR with a
+matching local project. When several projects match, select one in the same
+searchable dropdown used by Linear tickets. Both PR tabs support launching.
+
+The server reads the saved model, mode, reasoning and prompt at launch time and
+checks that the choices are still available. It rechecks the project's GitHub
+remotes and loads fresh PR metadata. Closed PRs and stale project selections
+are rejected before creating a workspace.
+
+The host fetches the PR's exact head and base commits using its GitHub CLI
+credentials, then creates a separate Paseo worktree and review branch at that
+head commit. The original checkout's branch, index, working files and
+`FETCH_HEAD` are preserved. The reviewer receives your saved prompt, PR identity,
+URL, branch names, exact commits and a comparison command. Fork PRs are fetched
+through the destination repository, without checking out the fork branch in
+your original working directory.
+
+Progress and errors appear beside the launch button. Repeated clicks and retries
+reuse the launch request; concurrent requests for the same PR and project share
+the pending launch. If workspace or agent creation cannot be confirmed, check
+the project's workspaces before starting another review. After success, select
+**Open agent** to see its findings. **Run again** starts a fresh agent and worktree
+for the same PR, loading its latest commits and your current saved reviewer setup.
+It uses a new launch request; retries of a failed request still reuse that request's
+ID. The previous agent stays accessible while the new launch is pending or fails.
+Older hosts without agent navigation show the agent ID instead. Created workspaces
+remain available in Paseo.
+
+Starting a review does not post anything to GitHub. The prompt asks the agent to
+report findings in its conversation; the default reviewer prompt also asks it
+to leave repository files unchanged. There is no automatic event listener or
+background launcher yet.
 
 ## Local filters
 
@@ -137,8 +194,8 @@ updates it immediately. There is no daemon background poller or event listener.
 Failed refreshes preserve the last successful page and display the error. Partial
 search results and GitHub's 1,000-result search cap are explicitly shown.
 
-This version only reads GitHub data. It does not create reviewer agents or post
-reviews, comments, approvals or other changes to GitHub. Each refresh runs two
+The plugin reads GitHub data and can create local reviewer agents. It does not
+post reviews, comments, approvals or other changes to GitHub. Each refresh runs two
 bounded, read-only `gh api` commands on the host: resolve the current user, then
 search the selected PR list. Editing owner filters also reads the current user
 and accessible repository owners in pages of 100 repositories. Raw subprocess
@@ -158,4 +215,8 @@ registration and reads, owner discovery and pagination, preservation of saved
 owner and time selections, and RPC registration. Live authentication and browser
 handoff need a configured Paseo host. Reviewer tests cover prompt validation,
 model identifier preservation, selectable model discovery, partial provider
-failures, and unavailable saved selections.
+failures, and unavailable saved selections. Project tests cover remote identity
+matching, custom names, multiple checkouts, worktrees, missing directories,
+partial failures, and bounded local inspection. Launch tests cover saved settings,
+mode and reasoning forwarding, exact commit fetching, checkout preservation,
+stale PR/project rejection, request deduplication, and uncertain creation errors.

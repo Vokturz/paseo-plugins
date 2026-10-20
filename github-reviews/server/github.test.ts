@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
-import { listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
+import { launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
 import { commandError, GitHubReviews, type RunGh } from "./github";
 import { filterSettings, filtersSchema } from "../shared/filters";
 import { reviewerSettings } from "../shared/reviewer";
@@ -27,7 +27,7 @@ function runner(result: unknown, login = "reviewer") {
   return { run, calls };
 }
 
-test("lists open review requests across repositories with read-only GitHub API calls", async () => {
+test("lists requested and already reviewed open PRs together with read-only GitHub API calls", async () => {
   const { run, calls } = runner({ total_count: 1, incomplete_results: false, items: [pullRequest()] });
   const before = Date.now();
   const result = await new GitHubReviews(run).list();
@@ -38,7 +38,8 @@ test("lists open review requests across repositories with read-only GitHub API c
   }
   assert.equal(calls[0][5], "user");
   assert.equal(calls[1][5], "search/issues");
-  assert.ok(calls[1].includes("q=is:pr is:open review-requested:reviewer"));
+  assert.ok(calls[1].includes("q=is:pr is:open (review-requested:reviewer OR reviewed-by:reviewer)"));
+  assert.ok(calls[1].includes("advanced_search=true"));
   assert.ok(calls[1].includes("sort=updated"));
   assert.ok(calls[1].includes("order=desc"));
   assert.ok(calls[1].includes("per_page=50"));
@@ -63,7 +64,8 @@ test("created scope searches the signed-in author's open PRs without requiring a
   const { run, calls } = runner({ total_count: 1, incomplete_results: false, items: [{ ...pullRequest(), user: { login: "my-account" }, draft: true }] }, "my-account");
   const result = await new GitHubReviews(run).list({ scope: "created" });
   assert.ok(calls[1].includes("q=is:pr is:open author:my-account"));
-  assert.ok(!calls[1].some((arg) => arg.includes("review-requested:")));
+  assert.ok(!calls[1].some((arg) => arg.includes("review-requested:") || arg.includes("reviewed-by:")));
+  assert.ok(!calls[1].includes("advanced_search=true"));
   assert.ok(calls[1].includes("sort=updated"));
   assert.ok(calls[1].includes("order=desc"));
   assert.equal(result.scope, "created");
@@ -125,7 +127,7 @@ test("re-resolves the authenticated account for each refresh", async () => {
   assert.equal((await service.list()).login, "first-account");
   login = "second-account";
   assert.equal((await service.list()).login, "second-account");
-  assert.deepEqual(queries, ["q=is:pr is:open review-requested:first-account", "q=is:pr is:open review-requested:second-account"]);
+  assert.deepEqual(queries, ["q=is:pr is:open (review-requested:first-account OR reviewed-by:first-account)", "q=is:pr is:open (review-requested:second-account OR reviewed-by:second-account)"]);
 });
 
 test("rejects invalid pages before running any command", async () => {
@@ -188,7 +190,7 @@ test("registers the list and owner RPCs with the Paseo server", () => {
     registerSettings(definition: unknown) { settings.push(definition); return { read: async () => ({ status: "ready", values: filtersSchema.parse({}) }) }; },
     handle(contract: unknown) { contracts.push(contract); },
   } as unknown as PluginServerContext);
-  assert.deepEqual(contracts, [listReviewsRpc, listOwnersRpc]);
+  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc]);
   assert.deepEqual(settings, [filterSettings, reviewerSettings]);
   cleanup();
 });

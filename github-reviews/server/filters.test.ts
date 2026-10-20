@@ -48,7 +48,7 @@ test("time presets preserve existing custom windows without changing stored valu
 test("query keeps the selected PR scope and combines any owner with the time window", () => {
   const filters = filtersSchema.parse({ owners: ["OpenAI", "octocat"], days: 7, dateField: "created" });
   assert.equal(searchQuery("reviewer", "review-requested", filters, now),
-    "is:pr is:open review-requested:reviewer user:openai user:octocat created:>=2026-10-13T15:30:00Z");
+    "is:pr is:open (review-requested:reviewer OR reviewed-by:reviewer) (user:openai OR user:octocat) created:>=2026-10-13T15:30:00Z");
   assert.equal(searchQuery("reviewer", "created", { ...filters, dateField: "updated" }, now),
     "is:pr is:open author:reviewer user:openai user:octocat updated:>=2026-10-13T15:30:00Z");
   assert.equal(searchQuery("reviewer", "created", filtersSchema.parse({}), now), "is:pr is:open author:reviewer");
@@ -86,22 +86,22 @@ test("list handler reads the locally persisted settings on every call and refuse
   let saved: { status: "ready"; revision: string; values: Filters } | { status: "invalid"; revision: string; error: string } = {
     status: "ready", revision: "one", values: filtersSchema.parse({ owners: ["first"] }),
   };
-  let handler: ((input: { page: number; scope: "created" }) => Promise<unknown>) | undefined;
+  let handler: ((input: { page: number; scope: "created" }, context: { paseo: unknown }) => Promise<unknown>) | undefined;
   const received: Filters[] = [];
   t.mock.method(GitHubReviews.prototype, "list", async (_input: Parameters<GitHubReviews["list"]>[0], filters?: Filters) => {
     received.push(filters!);
-    return {} as ReviewPage;
+    return { pullRequests: [] } as unknown as ReviewPage;
   });
   contribute({
     registerSettings() { return { read: async () => saved }; },
     handle(contract: { name: string }, callback: typeof handler) { if (contract.name === "github-reviews.list") handler = callback; },
   } as unknown as PluginServerContext);
   assert.ok(handler);
-  await handler({ page: 1, scope: "created" });
+  await handler({ page: 1, scope: "created" }, { paseo: {} });
   saved = { status: "ready", revision: "two", values: filtersSchema.parse({ days: 7 }) };
-  await handler({ page: 1, scope: "created" });
+  await handler({ page: 1, scope: "created" }, { paseo: {} });
   assert.deepEqual(received, [filtersSchema.parse({ owners: ["first"] }), filtersSchema.parse({ days: 7 })]);
   saved = { status: "invalid", revision: "three", error: "Malformed settings" };
-  await assert.rejects(handler({ page: 1, scope: "created" }), /saved PR filters are invalid/);
+  await assert.rejects(handler({ page: 1, scope: "created" }, { paseo: {} }), /saved PR filters are invalid/);
   assert.equal(received.length, 2);
 });

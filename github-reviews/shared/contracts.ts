@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { filtersSchema, ownerOptionSchema } from "./filters";
+import { projectMatchesSchema } from "./projects";
 
 export const PAGE_SIZE = 50;
 export const MAX_PAGE = 20; // GitHub search exposes at most 1,000 matches.
@@ -19,6 +20,7 @@ export const pullRequestSchema = z.object({
 });
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 
+// Retain the RPC scope ID for existing clients; this list includes past reviews.
 export const pullRequestScopeSchema = z.enum(["review-requested", "created"]);
 export type PullRequestScope = z.infer<typeof pullRequestScopeSchema>;
 
@@ -37,7 +39,7 @@ export const reviewPageSchema = z.object({
   incomplete: z.boolean(),
   capped: z.boolean(),
   fetchedAt: z.string(),
-});
+}).extend(projectMatchesSchema.shape);
 export type ReviewPage = z.infer<typeof reviewPageSchema>;
 
 export const listReviewsRpc = defineRpc({
@@ -53,3 +55,15 @@ export const ownerPageSchema = z.object({
   nextPage: z.number().int().positive().nullable(),
 });
 export const listOwnersRpc = defineRpc({ name: "github-reviews.list-owners", input: listOwnersInputSchema, output: ownerPageSchema });
+
+export const reviewTargetSchema = z.object({
+  repository: z.string().regex(/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/).max(200).transform((value) => value.toLowerCase()),
+  number: z.number().int().positive(),
+});
+export const launchReviewInputSchema = reviewTargetSchema.extend({
+  projectId: z.string().min(1).max(500),
+  requestId: z.uuid(),
+});
+export const launchReviewResultSchema = z.object({ agentId: z.string().min(1), workspaceId: z.string().min(1) });
+export type LaunchReviewResult = z.infer<typeof launchReviewResultSchema>;
+export const launchReviewRpc = defineRpc({ name: "github-reviews.launch", input: launchReviewInputSchema, output: launchReviewResultSchema });

@@ -7,7 +7,7 @@ import { DEFAULT_REVIEW_PROMPT, MAX_REVIEW_PROMPT_LENGTH, reviewerSchema, review
 import { ChoicePicker } from "./choice-picker";
 import { tokensFor } from "./design";
 import { Button, Callout, Divider, FieldLabel, ProviderMark, SectionHeading, Skeleton, SurfaceProvider } from "./ui";
-import { loadReviewerModels, reasoningForModel, reviewerOptionsIssue, selectedReviewerModel, type ReviewerMode, type ReviewerModel } from "./reviewer-models";
+import { loadReviewerModels, reasoningForModel, reviewerOptionsIssue, selectedReviewerModel, type ReviewerMode, type ReviewerModel } from "../shared/reviewer-models";
 
 export function ReviewerSetupSurface({ theme, layout, onBack }: PluginSurfaceProps & { onBack: () => void }) {
   const t = tokensFor(theme, layout);

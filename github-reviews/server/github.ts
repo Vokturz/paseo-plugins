@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { listInputSchema, listOwnersInputSchema, MAX_PAGE, ownerPageSchema, PAGE_SIZE, reviewPageSchema, type PullRequestScope, type ReviewPage } from "../shared/contracts";
+import { listInputSchema, listOwnersInputSchema, MAX_PAGE, ownerPageSchema, PAGE_SIZE, reviewPageSchema, reviewTargetSchema, type PullRequestScope, type ReviewPage } from "../shared/contracts";
 import { filtersSchema, ownerSchema, type Filters, type OwnerOption } from "../shared/filters";
 
 const execute = promisify(execFile);
@@ -9,10 +9,13 @@ export type RunGh = (args: string[]) => Promise<string>;
 
 export function searchQuery(login: string, scope: PullRequestScope, filters: Filters, now = new Date()): string {
   const normalized = filtersSchema.parse(filters);
-  const terms = ["is:pr", "is:open", `${scope === "created" ? "author" : "review-requested"}:${login}`];
-  // Repeated user qualifiers match repositories owned by any of the listed accounts,
-  // whether the account is an organization or an individual.
-  terms.push(...normalized.owners.map((owner) => `user:${owner}`));
+  // Use an explicit union: review-involves can omit PRs returned by reviewed-by.
+  const terms = ["is:pr", "is:open", scope === "created" ? `author:${login}` : `(review-requested:${login} OR reviewed-by:${login})`];
+  // Advanced search intersects repeated user qualifiers; group an explicit union
+  // so the saved owners continue to match any account in both search modes.
+  const owners = normalized.owners.map((owner) => `user:${owner}`);
+  if (scope === "review-requested" && owners.length > 1) terms.push(`(${owners.join(" OR ")})`);
+  else terms.push(...owners);
   if (normalized.days !== null) {
     const since = new Date(now.getTime() - normalized.days * 86_400_000).toISOString().replace(/\.\d{3}Z$/, "Z");
     terms.push(`${normalized.dateField}:>=${since}`);
@@ -47,6 +50,14 @@ export const runGh: RunGh = async (args) => {
 };
 
 const viewerSchema = z.object({ login: z.string().regex(/^[A-Za-z0-9_-]+$/) });
+const commitSchema = z.string().regex(/^[a-f0-9]{40}$/i);
+const prDetailSchema = z.object({
+  number: z.number().int().positive(), title: z.string(), state: z.enum(["open", "closed"]),
+  html_url: z.string(),
+  base: z.object({ sha: commitSchema, ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+  head: z.object({ sha: commitSchema, ref: z.string() }),
+});
+export type ReviewDetail = { repository: string; number: number; title: string; url: string; baseSha: string; headSha: string; baseRef: string; headRef: string };
 const searchSchema = z.object({
   total_count: z.number().int().nonnegative(),
   incomplete_results: z.boolean(),
@@ -66,6 +77,19 @@ const searchSchema = z.object({
 
 export class GitHubReviews {
   constructor(private readonly run: RunGh = runGh) {}
+
+  async detail(repository: string, number: number): Promise<ReviewDetail> {
+    const target = reviewTargetSchema.parse({ repository, number });
+    const parsed = prDetailSchema.safeParse(await this.api(`repos/${target.repository}/pulls/${target.number}`));
+    if (!parsed.success) throw new Error("GitHub returned an unexpected pull request response. Refresh and try again.");
+    const pr = parsed.data;
+    const url = `https://github.com/${target.repository}/pull/${target.number}`;
+    if (pr.number !== target.number || pr.base.repo.full_name.toLowerCase() !== target.repository || pr.html_url.toLowerCase() !== url) {
+      throw new Error("The repository or pull request identity changed. Refresh the list before starting a review.");
+    }
+    if (pr.state !== "open") throw new Error("This pull request is no longer open. Refresh the list.");
+    return { ...target, title: pr.title, url, baseSha: pr.base.sha, headSha: pr.head.sha, baseRef: pr.base.ref, headRef: pr.head.ref };
+  }
 
   private async api(endpoint: string, fields: string[] = []): Promise<unknown> {
     const response = await this.run([
@@ -100,6 +124,7 @@ export class GitHubReviews {
     const login = viewer.data.login;
     const parsed = searchSchema.safeParse(await this.api("search/issues", [
       `q=${searchQuery(login, scope, filters)}`,
+      ...(scope === "review-requested" ? ["advanced_search=true"] : []),
       "sort=updated", "order=desc", `per_page=${PAGE_SIZE}`, `page=${page}`,
     ]));
     if (!parsed.success) throw new Error("GitHub returned an unexpected pull request response. Try refreshing again.");
