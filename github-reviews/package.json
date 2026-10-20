@@ -9,8 +9,11 @@
     "directory": "github-reviews"
   },
   "type": "module",
-  "files": ["npm-shrinkwrap.json", "paseo-plugin.json", "index.client.tsx", "index.server.ts", "client/", "server/", "shared/", "README.md", "LICENSE"],
+  "files": ["npm-shrinkwrap.json", "paseo-plugin.json", "index.client.tsx", "index.server.ts", "client/", "server/", "shared/", "scripts/", "DEFAULT_REVIEW_PROMPT.md", "README.md", "LICENSE"],
   "scripts": {
+    "prepare": "node scripts/prepare-review-prompt.mjs",
+    "pretypecheck": "npm run prepare",
+    "pretest": "npm run prepare",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test server/*.test.ts"
   },

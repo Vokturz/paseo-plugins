@@ -105,12 +105,26 @@ it. Unavailable saved choices are shown explicitly and must be changed before
 saving. Older saved setups keep their model and prompt and use default values
 for the new controls.
 
-Edit the multiline **Review prompt** to describe what to check and how to
-report findings. A default prompt covers actionable bugs, regressions,
-security, verification, and file/line references. **Restore default prompt**
-replaces the draft; **Save reviewer setup** persists your selected provider,
-model, agent mode, reasoning, and prompt together. Prompts must be nonempty and are limited to 16,000
-characters. **Discard changes** restores the last saved setup.
+The default review prompt lives in [DEFAULT_REVIEW_PROMPT.md](./DEFAULT_REVIEW_PROMPT.md).
+The launcher reads this file on every fresh default review, and reviewer setup
+loads the same file for its preview and **Restore default prompt** action.
+It authorizes publishing confirmed findings as a GitHub `COMMENT` review, with
+identity, snapshot, duplicate, and publication checks. It uses static inspection
+and existing CI evidence, and leaves project files unchanged.
+
+Edit the multiline **Review prompt** to use a custom prompt instead.
+**Restore default prompt** switches back to following the Markdown file, including
+future edits to it. **Save reviewer setup** persists your selected provider,
+model, agent mode, reasoning, and prompt choice together. Custom prompts must be
+nonempty and are limited to 16,000 characters. **Discard changes** restores the
+last saved setup. Existing settings using the previous built-in prompt migrate
+to the Markdown default; saved custom prompts and model options are preserved.
+
+The Markdown file is included in the plugin package. Installation's `npm ci`
+prepare step records its installed path for Paseo's bundled server runtime.
+If the plugin directory moves, rerun `npm run prepare` and reload the plugin.
+Missing, empty, or oversized default prompts produce an error before workspace
+creation; the launcher does not fall back to older instructions.
 
 Reviewer configuration uses a separate local, host-scoped settings document,
 shared by both PR tabs and preserved across reloads and restarts. Concurrent
@@ -122,6 +136,14 @@ to GitHub.
 Save a model in **Reviewer setup**, then select **Start review** on a PR with a
 matching local project. When several projects match, select one in the same
 searchable dropdown used by Linear tickets. Both PR tabs support launching.
+
+Select **Add instructions** before launching to enter optional instructions or
+context for that PR, such as "Look closely at session expiry and concurrent
+requests." This text is added to the saved review prompt for the run; it does
+not replace or change your saved reviewer setup. Up to 8,000 characters are
+supported. **Clear instructions** removes it. Drafts are kept per PR while the
+view is open, including across refreshes, tab changes and pagination; they are
+not stored in host settings or reused for other PRs.
 
 The server reads the saved model, mode, reasoning and prompt at launch time and
 checks that the choices are still available. It rechecks the project's GitHub
@@ -137,20 +159,33 @@ through the destination repository, without checking out the fork branch in
 your original working directory.
 
 Progress and errors appear beside the launch button. Repeated clicks and retries
-reuse the launch request; concurrent requests for the same PR and project share
+reuse the launch request; concurrent requests for the same PR, project and instructions share
 the pending launch. If workspace or agent creation cannot be confirmed, check
 the project's workspaces before starting another review. After success, select
 **Open agent** to see its findings. **Run again** starts a fresh agent and worktree
 for the same PR, loading its latest commits and your current saved reviewer setup.
 It uses a new launch request; retries of a failed request still reuse that request's
 ID. The previous agent stays accessible while the new launch is pending or fails.
+You can edit the extra instructions before **Run again**. If you edit them after
+a failed launch, the next attempt uses a new request ID for the changed context.
 Older hosts without agent navigation show the agent ID instead. Created workspaces
 remain available in Paseo.
 
-Starting a review does not post anything to GitHub. The prompt asks the agent to
-report findings in its conversation; the default reviewer prompt also asks it
-to leave repository files unchanged. There is no automatic event listener or
-background launcher yet.
+Each PR restores its unarchived review agents from their saved GitHub repository
+and PR-number labels on the Paseo host. Links survive page reloads, plugin reloads,
+and switching clients. All unarchived runs remain listed with their title, status,
+and update time, including idle or completed agents. Archiving or removing an
+agent removes its link immediately; the list is also refreshed every minute and
+when the app returns to the foreground. **Run again** remains available alongside
+existing agents. Links remain accessible even if the matching local project can
+no longer be found. Failed agent-list reads show a retry action.
+
+Starting a review with the default prompt authorizes the agent to write and
+publish a GitHub `COMMENT` review containing confirmed findings, then return the
+review link or a publication blocker in its conversation. The prompt excludes
+approvals, request-changes reviews, merges, code edits, and unrequested thread
+resolution. Custom prompts control their own review and publication instructions.
+There is no automatic event listener or background launcher yet.
 
 ## Local filters
 
@@ -194,8 +229,9 @@ updates it immediately. There is no daemon background poller or event listener.
 Failed refreshes preserve the last successful page and display the error. Partial
 search results and GitHub's 1,000-result search cap are explicitly shown.
 
-The plugin reads GitHub data and can create local reviewer agents. It does not
-post reviews, comments, approvals or other changes to GitHub. Each refresh runs two
+The plugin reads GitHub data and can create local reviewer agents. Agents using
+the default prompt may publish reviews; refreshing the list remains read-only.
+Each refresh runs two
 bounded, read-only `gh api` commands on the host: resolve the current user, then
 search the selected PR list. Editing owner filters also reads the current user
 and accessible repository owners in pages of 100 repositories. Raw subprocess
@@ -219,4 +255,9 @@ failures, and unavailable saved selections. Project tests cover remote identity
 matching, custom names, multiple checkouts, worktrees, missing directories,
 partial failures, and bounded local inspection. Launch tests cover saved settings,
 mode and reasoning forwarding, exact commit fetching, checkout preservation,
-stale PR/project rejection, request deduplication, and uncertain creation errors.
+stale PR/project rejection, request deduplication, uncertain creation errors,
+per-run instructions, validation, and separation of launches with different context.
+Default prompt tests cover live Markdown reads, invalid assets, legacy migration,
+custom prompt preservation, and publication instructions in the launched prompt.
+Linked-agent tests cover label-based restoration, pagination, multiple runs,
+archive/removal updates, stale-response races, retries, and subscription cleanup.

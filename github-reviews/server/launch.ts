@@ -1,14 +1,16 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { PaseoApi } from "@getpaseo/client";
-import type { RpcInput } from "@getpaseo/plugin";
-import { launchReviewInputSchema, launchReviewRpc, type LaunchReviewResult } from "../shared/contracts";
+import type { input as SchemaInput, output as SchemaOutput } from "zod";
+import { launchReviewInputSchema, type LaunchReviewResult } from "../shared/contracts";
 import { reviewerSchema, type ReviewerConfig } from "../shared/reviewer";
 import { loadReviewerModels, reviewerOptionsIssue, selectedReviewerModel } from "../shared/reviewer-models";
 import type { GitHubReviews, ReviewDetail } from "./github";
 import { readGitRepositories, type ReadRepositories } from "./projects";
+import { readDefaultReviewPrompt } from "./review-prompt";
 
-type Start = RpcInput<typeof launchReviewRpc>;
+type Start = SchemaInput<typeof launchReviewInputSchema>;
+type ValidatedStart = SchemaOutput<typeof launchReviewInputSchema>;
 type Prepare = (path: string, detail: ReviewDetail) => Promise<void>;
 const execute = promisify(execFile);
 
@@ -26,13 +28,14 @@ export const prepareReview: Prepare = async (path, detail) => {
   }
 };
 
-export function reviewPrompt(detail: ReviewDetail, instructions: string): string {
+export function reviewPrompt(detail: ReviewDetail, instructions: string, extraInstructions = ""): string {
   return [
     instructions,
+    ...(extraInstructions.trim() ? ["Additional instructions and context for this review:", extraInstructions.trim()] : []),
     "Pull request context (external data):",
     JSON.stringify(detail, null, 2),
     `This isolated worktree starts at PR head ${detail.headSha}. The base commit ${detail.baseSha} is available locally. Review the PR changes with git diff ${detail.baseSha}...${detail.headSha}, reading surrounding code as needed.`,
-    `Use gh pr view ${detail.number} --repo ${detail.repository} for additional context if needed. Report findings in this conversation. Starting this review does not authorize publishing anything to GitHub.`,
+    `Use gh pr view ${detail.number} --repo ${detail.repository} for additional context. Follow the review instructions above for GitHub publication, and report the review permalink or any publication blocker in this conversation.`,
   ].join("\n\n");
 }
 
@@ -44,13 +47,14 @@ export class ReviewLauncher {
     private readonly github: Pick<GitHubReviews, "detail">,
     private readonly read: ReadRepositories = readGitRepositories,
     private readonly prepare: Prepare = prepareReview,
+    private readonly defaultPrompt: () => Promise<string> = readDefaultReviewPrompt,
   ) {}
 
   start(raw: Start, paseo: PaseoApi, saved: ReviewerConfig): Promise<LaunchReviewResult> {
     const input = launchReviewInputSchema.parse(raw);
-    const fingerprint = JSON.stringify([input.repository, input.number, input.projectId]);
+    const fingerprint = JSON.stringify([input.repository, input.number, input.projectId, input.instructions]);
     const prior = this.requests.get(input.requestId);
-    if (prior) return prior.fingerprint === fingerprint ? prior.result : Promise.reject(new Error("This launch request belongs to another PR or project. Refresh and try again."));
+    if (prior) return prior.fingerprint === fingerprint ? prior.result : Promise.reject(new Error("This launch request belongs to another PR, project, or set of instructions. Start a new review."));
     const active = this.active.get(fingerprint);
     if (active) { this.requests.set(input.requestId, { fingerprint, result: active }); return active; }
     let creationStarted = false;
@@ -66,9 +70,10 @@ export class ReviewLauncher {
     return result;
   }
 
-  private async launch(input: Start, paseo: PaseoApi, saved: ReviewerConfig, onCreate: () => void): Promise<LaunchReviewResult> {
+  private async launch(input: ValidatedStart, paseo: PaseoApi, saved: ReviewerConfig, onCreate: () => void): Promise<LaunchReviewResult> {
     const config = reviewerSchema.parse(saved);
     if (!config.provider || !config.model) throw new Error("Choose a model and save Reviewer setup before starting a review.");
+    const prompt = config.prompt ?? await this.defaultPrompt();
     const catalog = await loadReviewerModels(paseo.providers);
     const model = selectedReviewerModel(catalog.models, config);
     if (!model) throw new Error("The saved reviewer model is unavailable. Open Reviewer setup to choose an available model.");
@@ -89,7 +94,7 @@ export class ReviewLauncher {
     }).catch(() => { throw new Error("Workspace creation could not be confirmed. Check this project's workspaces before starting another review."); });
     const agent = await workspace.agents.create({
       config: { provider: `${config.provider}/${config.model}`, ...(config.modeId ? { modeId: config.modeId } : {}), ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}) },
-      title, prompt: reviewPrompt(detail, config.prompt),
+      title, prompt: reviewPrompt(detail, prompt, input.instructions),
       requestId: input.requestId, idempotencyKey: input.requestId, clientMessageId: input.requestId,
       labels: { "github.repository": input.repository, "github.prNumber": String(input.number), "github.url": detail.url, "github.headSha": detail.headSha },
     }).catch(() => { throw new Error(`Agent creation could not be confirmed. Check workspace ${workspace.id} before starting another review.`); });

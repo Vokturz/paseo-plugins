@@ -6,13 +6,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import type { PaseoApi, PaseoWorkspaceCreateOptions, PaseoWorkspaceAgentCreateOptions } from "@getpaseo/client";
-import { launchReviewInputSchema, launchReviewRpc } from "../shared/contracts";
+import { launchReviewInputSchema, launchReviewRpc, MAX_REVIEW_INSTRUCTIONS_LENGTH } from "../shared/contracts";
 import { reviewerSchema, reviewerSettings } from "../shared/reviewer";
 import type { ReviewDetail } from "./github";
 import { GitHubReviews } from "./github";
-import { prepareReview, ReviewLauncher } from "./launch";
+import { prepareReview, ReviewLauncher, reviewPrompt } from "./launch";
 import contribute from "../index.server";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { readDefaultReviewPrompt } from "./review-prompt";
 
 const input = { repository: "acme/web", number: 42, projectId: "project", requestId: "17e8c7a2-7cfa-4dce-90a5-50bd1e93f5fa" };
 const detail: ReviewDetail = { repository: "acme/web", number: 42, title: "Fix sessions", url: "https://github.com/acme/web/pull/42", baseSha: "a".repeat(40), headSha: "b".repeat(40), baseRef: "main", headRef: "fix" };
@@ -46,9 +47,9 @@ test("launches an isolated PR-head worktree using the saved model, native mode, 
   assert.deepEqual(f.workspaces[0].source, { kind: "worktree", projectId: "project", cwd: "/local/web", action: "branch-off", baseBranch: detail.headSha, branchName: `review/pr-42-${input.requestId}` });
   const agent = f.agents[0];
   assert.deepEqual(agent.config, { provider: "claude/vendor/model", modeId: "auto", thinkingOptionId: "high" });
-  assert.ok(agent.prompt?.startsWith(config.prompt));
+  assert.ok(agent.prompt?.startsWith(config.prompt!));
   assert.ok(agent.prompt?.includes(`git diff ${detail.baseSha}...${detail.headSha}`));
-  assert.ok(agent.prompt?.includes("does not authorize publishing"));
+  assert.ok(!agent.prompt?.includes("does not authorize publishing"));
   assert.equal(agent.labels?.["github.headSha"], detail.headSha);
   assert.equal(agent.idempotencyKey, input.requestId);
 });
@@ -57,6 +58,77 @@ test("provider defaults are omitted rather than replaced with another mode or re
   const f = fixture();
   await f.launcher.start(input, f.paseo, { ...config, modeId: null, thinkingOptionId: null });
   assert.deepEqual(f.agents[0].config, { provider: "claude/vendor/model" });
+});
+
+test("launches with the current Markdown default and permits publication without conflicting instructions", async () => {
+  const f = fixture();
+  await f.launcher.start({ ...input, instructions: "Focus on session expiry." }, f.paseo, { ...config, prompt: null });
+  const prompt = f.agents[0].prompt!;
+  assert.ok(prompt.startsWith(await readDefaultReviewPrompt()));
+  assert.ok(prompt.includes("explicitly authorizes you to write and publish a GitHub review"));
+  assert.ok(prompt.includes("Focus on session expiry."));
+  assert.ok(!prompt.includes("does not authorize publishing"));
+});
+
+test("reads the default anew for fresh launches and preserves explicit custom prompts", async () => {
+  const f = fixture();
+  let current = "First Markdown prompt", reads = 0;
+  const launcher = new ReviewLauncher({ detail: async () => detail }, async () => ["acme/web"], async () => {}, async () => { reads++; return current; });
+  await launcher.start(input, f.paseo, { ...config, prompt: null });
+  current = "Edited Markdown prompt";
+  await launcher.start({ ...input, requestId: "7a51e656-aa94-4d72-a315-539f23eb6465" }, f.paseo, { ...config, prompt: null });
+  await launcher.start({ ...input, requestId: "bdab30b6-f768-464b-937d-071d1c445e82" }, f.paseo, config);
+  assert.equal(reads, 2);
+  assert.ok(f.agents[0].prompt?.startsWith("First Markdown prompt"));
+  assert.ok(f.agents[1].prompt?.startsWith("Edited Markdown prompt"));
+  assert.ok(f.agents[2].prompt?.startsWith(config.prompt!));
+});
+
+test("default prompt loading errors stop launch before any workspace mutation", async () => {
+  const f = fixture();
+  const launcher = new ReviewLauncher({ detail: async () => { assert.fail("must not load PR"); } }, async () => [], async () => {}, async () => { throw new Error("Missing Markdown prompt"); });
+  await assert.rejects(launcher.start(input, f.paseo, { ...config, prompt: null }), /Missing Markdown prompt/);
+  assert.equal(f.workspaces.length, 0);
+});
+
+test("adds optional run instructions alongside the saved prompt without changing saved settings", async () => {
+  const f = fixture();
+  const instructions = "Look closely at session expiry.\n\nCheck races between refresh and logout.";
+  const saved = { ...config };
+  await f.launcher.start({ ...input, instructions: `  ${instructions}\n ` }, f.paseo, saved);
+  const prompt = f.agents[0].prompt!;
+  assert.ok(prompt.startsWith(config.prompt!));
+  assert.ok(prompt.includes(`Additional instructions and context for this review:\n\n${instructions}`));
+  assert.ok(prompt.indexOf(instructions) < prompt.indexOf("Pull request context (external data):"));
+  assert.deepEqual(saved, config);
+  assert.equal(reviewPrompt(detail, config.prompt!), reviewPrompt(detail, config.prompt!, " \n "));
+  assert.ok(!reviewPrompt(detail, config.prompt!).includes("Additional instructions"));
+});
+
+test("validates optional context length and type before any launch work", () => {
+  assert.equal(launchReviewInputSchema.parse(input).instructions, "");
+  assert.equal(launchReviewInputSchema.parse({ ...input, instructions: " \n " }).instructions, "");
+  assert.equal(launchReviewInputSchema.parse({ ...input, instructions: "x".repeat(MAX_REVIEW_INSTRUCTIONS_LENGTH) }).instructions.length, MAX_REVIEW_INSTRUCTIONS_LENGTH);
+  const f = fixture();
+  for (const instructions of ["x".repeat(MAX_REVIEW_INSTRUCTIONS_LENGTH + 1), 123, null]) {
+    assert.throws(() => f.launcher.start({ ...input, instructions } as Parameters<ReviewLauncher["start"]>[0], f.paseo, config));
+  }
+  assert.equal(f.prepared(), 0);
+  assert.equal(f.workspaces.length, 0);
+});
+
+test("deduplicates matching run instructions but keeps distinct context requests separate", async () => {
+  const f = fixture();
+  const first = f.launcher.start({ ...input, instructions: "Check sessions" }, f.paseo, config);
+  const repeated = f.launcher.start({ ...input, instructions: "  Check sessions  ", requestId: "7a51e656-aa94-4d72-a315-539f23eb6465" }, f.paseo, config);
+  const different = f.launcher.start({ ...input, instructions: "Check retries", requestId: "bdab30b6-f768-464b-937d-071d1c445e82" }, f.paseo, config);
+  await Promise.all([first, repeated, different]);
+  assert.equal(f.workspaces.length, 2);
+  assert.equal(f.agents.length, 2);
+  assert.ok(f.agents.some((agent) => agent.prompt?.includes("Check sessions")));
+  assert.ok(f.agents.some((agent) => agent.prompt?.includes("Check retries")));
+  await assert.rejects(f.launcher.start({ ...input, instructions: "Changed instructions" }, f.paseo, config), /set of instructions/);
+  assert.equal(f.workspaces.length, 2);
 });
 
 test("rejects unavailable settings and stale projects before any workspace or agent is created", async () => {

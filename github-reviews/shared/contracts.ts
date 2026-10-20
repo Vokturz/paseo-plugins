@@ -2,10 +2,12 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { filtersSchema, ownerOptionSchema } from "./filters";
 import { projectMatchesSchema } from "./projects";
+import { reviewPromptTextSchema } from "./reviewer";
 
 export const PAGE_SIZE = 50;
 export const MAX_PAGE = 20; // GitHub search exposes at most 1,000 matches.
 export const POLL_INTERVAL_MS = 60_000;
+export const MAX_REVIEW_INSTRUCTIONS_LENGTH = 8_000;
 
 export const pullRequestSchema = z.object({
   id: z.number().int().positive(),
@@ -63,7 +65,9 @@ export const reviewTargetSchema = z.object({
 export const launchReviewInputSchema = reviewTargetSchema.extend({
   projectId: z.string().min(1).max(500),
   requestId: z.uuid(),
+  instructions: z.string().trim().max(MAX_REVIEW_INSTRUCTIONS_LENGTH, "Extra instructions are limited to 8,000 characters.").default(""),
 });
 export const launchReviewResultSchema = z.object({ agentId: z.string().min(1), workspaceId: z.string().min(1) });
 export type LaunchReviewResult = z.infer<typeof launchReviewResultSchema>;
 export const launchReviewRpc = defineRpc({ name: "github-reviews.launch", input: launchReviewInputSchema, output: launchReviewResultSchema });
+export const defaultReviewPromptRpc = defineRpc({ name: "github-reviews.default-prompt", input: z.object({}), output: z.object({ prompt: reviewPromptTextSchema }) });

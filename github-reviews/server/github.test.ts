@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
-import { launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
+import { defaultReviewPromptRpc, launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
 import { commandError, GitHubReviews, type RunGh } from "./github";
 import { filterSettings, filtersSchema } from "../shared/filters";
 import { reviewerSettings } from "../shared/reviewer";
@@ -190,7 +190,7 @@ test("registers the list and owner RPCs with the Paseo server", () => {
     registerSettings(definition: unknown) { settings.push(definition); return { read: async () => ({ status: "ready", values: filtersSchema.parse({}) }) }; },
     handle(contract: unknown) { contracts.push(contract); },
   } as unknown as PluginServerContext);
-  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc]);
+  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc, defaultReviewPromptRpc]);
   assert.deepEqual(settings, [filterSettings, reviewerSettings]);
   cleanup();
 });

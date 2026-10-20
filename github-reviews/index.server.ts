@@ -1,10 +1,11 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { GitHubReviews } from "./server/github";
-import { launchReviewRpc, listOwnersRpc, listReviewsRpc } from "./shared/contracts";
+import { defaultReviewPromptRpc, launchReviewRpc, listOwnersRpc, listReviewsRpc } from "./shared/contracts";
 import { filterSettings } from "./shared/filters";
 import { reviewerSettings } from "./shared/reviewer";
 import { matchRepositoryProjects } from "./server/projects";
 import { ReviewLauncher } from "./server/launch";
+import { readDefaultReviewPrompt } from "./server/review-prompt";
 
 export default function contribute(server: PluginServerContext) {
   const github = new GitHubReviews();
@@ -24,5 +25,6 @@ export default function contribute(server: PluginServerContext) {
     return { ...page, ...projects };
   });
   server.handle(listOwnersRpc, (input) => github.owners(input));
+  server.handle(defaultReviewPromptRpc, async () => ({ prompt: await readDefaultReviewPrompt() }));
   return () => {};
 }
