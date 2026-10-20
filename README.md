@@ -10,6 +10,7 @@ Each plugin lives in its own folder and is installed independently. See the
 | --- | --- | --- |
 | [linear-tickets](./linear-tickets) | Connects to Linear's GraphQL API (read queries; optionally marks a ticket In Progress on launch), lists the tickets assigned to you, highlights blockers, and shows parent, subissue, and related tickets regardless of assignee. Filter by workflow status or dependency, search, sort, then pick a project, base branch, provider and model before launching. The launch prompt is customizable per host. | Paseo ≥ 0.8.0, Node.js ≥ 22 on the daemon host |
 | [peer-agents](./peer-agents) | Lets agents choose a registered project, create an independent peer in a new workspace, and exchange messages with injected MCP tools. | Paseo ≥ 0.9.1, Node.js ≥ 22 and Paseo CLI on the daemon host |
+| [github-reviews](./github-reviews) | Lists open GitHub PRs awaiting your review or created by you, with locally saved owner and time filters. Refreshes every minute while open and opens PRs in your browser. Uses the host's GitHub CLI account. | Paseo ≥ 0.11.2, Node.js ≥ 22 and GitHub CLI on the daemon host |
 
 ## Install
 

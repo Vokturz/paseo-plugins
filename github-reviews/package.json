@@ -1,0 +1,27 @@
+{
+  "name": "paseo-github-reviews",
+  "version": "0.1.0",
+  "description": "Paseo sidebar listing GitHub pull requests awaiting your review or created by you.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vokturz/paseo-plugins.git",
+    "directory": "github-reviews"
+  },
+  "type": "module",
+  "files": ["npm-shrinkwrap.json", "paseo-plugin.json", "index.client.tsx", "index.server.ts", "client/", "server/", "shared/", "README.md", "LICENSE"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test server/*.test.ts"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.11.2",
+    "@types/node": "^22.0.0",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}

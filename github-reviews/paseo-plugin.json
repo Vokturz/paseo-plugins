@@ -1,0 +1,5 @@
+{
+  "id": "github-reviews",
+  "requirements": { "paseo": ">=0.11.2" },
+  "build": [["npm", "ci", "--include=dev"]]
+}
