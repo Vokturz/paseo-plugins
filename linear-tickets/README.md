@@ -2,7 +2,9 @@
 
 A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you
 (filtered and searched server-side across your workspace), and starts an agent with the
-ticket details, comments and relationships in its first prompt.
+ticket details, comments and relationships in its first prompt. The conversation shows a
+Linear ticket card with status, priority, additional direction, and the launch-time access
+setting. Expand **Full instructions and context** to read the complete original message.
 
 ![Ticket list with status filters, search and sorting](images/02-ticket-list.png)
 ![Starting an agent from a ticket](images/01-create-agent.png)
@@ -39,14 +41,15 @@ paseo plugin reload linear-tickets
 ## Connect and start work
 
 1. Create a personal Linear API key in Settings → Security & access. Read permission
-   and access to the relevant teams are sufficient; write permission is only needed
-   for the optional "mark the ticket In Progress" step (see below).
+   and access to the relevant teams are sufficient for browsing; write permission is needed
+   for launch-time status changes and agent access to Linear (see below).
 2. Paste it into **Connect Linear**. Alternatively, set `LINEAR_API_KEY` in the
    Paseo daemon's environment before starting the daemon.
 3. Select an assigned ticket. Preview the ticket context and choose a Paseo project.
    For Git projects, select a base branch from the local or remote branches known
    to the checkout. Choose a provider, then search its models. When supported, choose the
-   provider's change mode and the model's reasoning level, then optionally add instructions.
+   provider's change mode and the model's reasoning level under **Mode and reasoning**,
+   then optionally add instructions.
 4. Select **Start agent with ticket**, then **Open agent**.
 
 After an agent starts successfully, the plugin remembers that provider's model, change

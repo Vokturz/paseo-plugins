@@ -2,8 +2,19 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { LinearTicketsSurface } from "./client/linear-tickets";
 import { AgentLinearTicketPanel } from "./client/agent-ticket";
 import { installLinearAgentBadges } from "./client/agent-badges";
+import { TicketIntroCard } from "./client/ticket-intro-card";
+import { parseTicketIntro, ticketIntroCardSchema } from "./shared/ticket-intro";
 
 export default function contribute(client: PluginClientContext) {
+  client.addTimelineTransformer({
+    id: "linear-ticket-intro", query: { itemType: "user_message" },
+    transform({ item }) {
+      const data = parseTicketIntro(item.text);
+      if (!data) return undefined;
+      return { items: [{ type: "plugin", kind: "linear-ticket-intro", version: 1, data }] };
+    },
+  });
+  client.addTimelineRenderer({ kind: "linear-ticket-intro", version: 1, schema: ticketIntroCardSchema, Component: TicketIntroCard });
   client.addSurface("linear-tickets", LinearTicketsSurface);
   client.addWorkspacePanel({ id: "linear-ticket", title: "Linear ticket", icon: "SquareKanban", context: "agent", locations: ["workspace", "explorer"], Component: AgentLinearTicketPanel });
   const removeAgentBadges = installLinearAgentBadges(client);

@@ -15,8 +15,8 @@ export function ChoicePicker({ label, placeholder, options, value, onChange, t, 
   const selected = options.find((option) => option.id === value);
   const visible = options.filter((option) => `${option.label} ${option.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()));
   return <View style={{ gap: 8 }}>
-    <Pressable accessibilityRole="button" accessibilityLabel={`${label}: ${selected?.label ?? placeholder}`} accessibilityState={{ expanded: open, disabled }} disabled={disabled} onPress={() => setOpen(!open)}
-      style={{ paddingHorizontal: 13, paddingVertical: 11, minHeight: 50, borderRadius: t.radius.md, borderWidth: 1, borderColor: open ? colors.accent : colors.border, backgroundColor: colors.surface0, opacity: disabled ? 0.5 : 1, flexDirection: "row", alignItems: "center", gap: 11 }}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${label}: ${selected?.label ?? placeholder}`} accessibilityState={{ expanded: open, disabled }} aria-expanded={open} aria-disabled={disabled} disabled={disabled} onPress={() => setOpen(!open)}
+      style={({ pressed }) => ({ paddingHorizontal: 13, paddingVertical: 11, minHeight: 50, borderRadius: t.radius.md, borderWidth: 1, borderColor: open ? colors.accent : colors.border, backgroundColor: pressed ? colors.surface2 : colors.surface0, opacity: disabled ? 0.5 : 1, flexDirection: "row", alignItems: "center", gap: 11 })}>
       {leading ?? (icon ? <Icon name={icon} size={17} color={selected ? colors.accent : colors.foregroundMuted} /> : null)}
       <View style={{ flex: 1, gap: 2, minWidth: 0 }}>
         <Text numberOfLines={1} style={{ color: selected ? colors.foreground : colors.foregroundMuted, fontSize: 14 }}>{selected?.label ?? placeholder}</Text>
@@ -29,12 +29,12 @@ export function ChoicePicker({ label, placeholder, options, value, onChange, t, 
         <Icon name="Search" size={14} color={colors.foregroundMuted} />
         <TextInput accessibilityLabel={`Search ${label.toLowerCase()}`} placeholder={`Search ${label.toLowerCase()}…`} placeholderTextColor={colors.foregroundMuted} value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
           style={{ color: colors.foreground, paddingVertical: 9, fontSize: 13, flex: 1, minWidth: 0 }} />
-        {!!search && <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={() => setSearch("")}><Icon name="X" size={14} color={colors.foregroundMuted} /></Pressable>}
+        {!!search && <Pressable accessibilityRole="button" accessibilityLabel="Clear search" style={({ pressed }) => ({ minWidth: t.touchTarget, minHeight: t.touchTarget, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.6 : 1 })} onPress={() => setSearch("")}><Icon name="X" size={14} color={colors.foregroundMuted} /></Pressable>}
       </View>}
       <ScrollView style={{ maxHeight: 260 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-        {visible.map((option) => <Pressable key={option.id} accessibilityRole="button" accessibilityState={{ selected: option.id === value }} onPress={() => { onChange(option.id); setOpen(false); setSearch(""); }}
+        {visible.map((option) => <Pressable key={option.id} accessibilityRole="button" accessibilityState={{ selected: option.id === value }} aria-pressed={option.id === value} onPress={() => { onChange(option.id); setOpen(false); setSearch(""); }}
           onHoverIn={() => setHovered(option.id)} onHoverOut={() => setHovered(null)}
-          style={{ paddingHorizontal: 10, paddingVertical: 9, borderRadius: t.radius.sm, backgroundColor: option.id === value ? colors.surface2 : hovered === option.id ? colors.surface1 : colors.surface0, gap: 2 }}>
+          style={({ pressed }) => ({ minHeight: t.touchTarget, justifyContent: "center", paddingHorizontal: 10, paddingVertical: 9, borderRadius: t.radius.sm, backgroundColor: option.id === value ? colors.surface2 : hovered === option.id || pressed ? colors.surface1 : colors.surface0, gap: 2 })}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text numberOfLines={1} style={{ color: option.id === value ? colors.accent : colors.foreground, fontSize: 14, flex: 1 }}>{option.label}</Text>
             {option.id === value && <Icon name="Check" size={15} color={colors.accent} />}

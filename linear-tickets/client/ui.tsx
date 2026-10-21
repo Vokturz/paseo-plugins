@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Animated, Image, Pressable, Text, View } from "react-native";
+import { AccessibilityInfo, Animated, Image, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { Tokens } from "./design";
@@ -34,13 +34,14 @@ export function ActionButton({ title, icon, leading, onPress, t, primary = false
   const c = t.colors;
   const color = primary ? c.accentForeground : tone === "danger" ? c.statusDanger : chosen ? c.accent : c.foreground;
   const active = hovered || chosen;
-  return <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, selected: chosen }} disabled={disabled} onPress={onPress}
+  return <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, selected: chosen }} aria-disabled={disabled} aria-pressed={chosen} disabled={disabled} onPress={onPress}
     onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)}
     style={({ pressed }) => ({
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
-      alignSelf: stretch ? "stretch" : "flex-start", minHeight: size === "sm" ? 32 : 40,
+      alignSelf: stretch ? "stretch" : "flex-start", minHeight: Math.max(t.touchTarget, size === "sm" ? 32 : 40),
       paddingHorizontal: iconOnly ? 0 : size === "sm" ? 10 : primary ? 16 : 12,
-      width: iconOnly ? (size === "sm" ? 32 : 40) : undefined,
+      minWidth: t.touchTarget, maxWidth: "100%",
+      width: iconOnly ? Math.max(t.touchTarget, size === "sm" ? 32 : 40) : undefined,
       borderRadius: t.radius.md, borderWidth: 1,
       // Selection is the only persistent accent state. React Native Web can retain
       // focus after another filter is pressed, which otherwise makes two chips look selected.
@@ -49,7 +50,7 @@ export function ActionButton({ title, icon, leading, onPress, t, primary = false
       opacity: disabled ? 0.4 : pressed ? 0.75 : 1,
     })}>
     {leading ?? (icon ? <Icon name={icon} size={size === "sm" ? 13 : 15} color={color} /> : null)}
-    {!iconOnly && <Text style={{ color, fontSize: size === "sm" ? 12 : 13, fontWeight: "600" }}>{title}</Text>}
+    {!iconOnly && <Text style={{ color, fontSize: size === "sm" ? 12 : 14, fontWeight: "600", flexShrink: 1 }}>{title}</Text>}
   </Pressable>;
 }
 
@@ -83,10 +84,23 @@ export function SectionHeading({ title, subtitle, icon, trailing, t }: { title: 
 }
 
 export function FieldLabel({ title, icon, hint, t }: { title: string; icon?: string; hint?: string; t: Tokens }) {
-  return <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+  return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
     {icon && <Icon name={icon} size={12} color={t.colors.foregroundMuted} />}
     <Text style={{ ...t.eyebrow, letterSpacing: 1.1 }}>{title}</Text>
     {hint && <Text style={{ ...t.muted, fontSize: 11 }}>· {hint}</Text>}
+  </View>;
+}
+
+export function Disclosure({ title, t, children }: { title: string; t: Tokens; children: ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  return <View style={{ gap: 12 }}>
+    <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ expanded }} aria-expanded={expanded} onPress={() => setExpanded(!expanded)}
+      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 8, minHeight: t.touchTarget, paddingHorizontal: 8,
+        borderRadius: t.radius.sm, backgroundColor: pressed ? t.colors.surface2 : "transparent" })}>
+      <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={16} color={t.colors.foregroundMuted} />
+      <Text style={{ ...t.label, flexShrink: 1 }}>{title}</Text>
+    </Pressable>
+    {expanded && children}
   </View>;
 }
 
@@ -131,11 +145,11 @@ export function StatusBadge({ status, statusType, t, compact = false }: { status
 export function Segmented<Value extends string>({ label, options, value, onChange, t, disabled = false }: {
   label: string; options: { value: Value; label: string; icon?: string }[]; value: Value; onChange: (value: Value) => void; t: Tokens; disabled?: boolean;
 }) {
-  return <View accessibilityLabel={label} style={{ flexDirection: "row", backgroundColor: t.colors.surface0, borderWidth: 1, borderColor: t.colors.border, borderRadius: t.radius.md, padding: 3, gap: 3, alignSelf: "flex-start" }}>
+  return <View accessibilityLabel={label} style={{ flexDirection: "row", flexWrap: "wrap", maxWidth: "100%", backgroundColor: t.colors.surface0, borderWidth: 1, borderColor: t.colors.border, borderRadius: t.radius.md, padding: 3, gap: 3, alignSelf: "flex-start" }}>
     {options.map((option) => {
       const chosen = option.value === value;
-      return <Pressable key={option.value} accessibilityRole="button" accessibilityLabel={`${label}: ${option.label}`} accessibilityState={{ selected: chosen, disabled }} disabled={disabled} onPress={() => onChange(option.value)}
-        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: t.radius.sm,
+      return <Pressable key={option.value} accessibilityRole="button" accessibilityLabel={`${label}: ${option.label}`} accessibilityState={{ selected: chosen, disabled }} aria-pressed={chosen} aria-disabled={disabled} disabled={disabled} onPress={() => onChange(option.value)}
+        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", minHeight: t.touchTarget, maxWidth: "100%", gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: t.radius.sm,
           backgroundColor: chosen ? t.colors.surface2 : pressed ? t.colors.surface1 : "transparent", opacity: disabled ? 0.45 : 1 }) }>
         {option.icon && <Icon name={option.icon} size={12} color={chosen ? t.colors.accent : t.colors.foregroundMuted} />}
         <Text style={{ color: chosen ? t.colors.accent : t.colors.foregroundMuted, fontSize: 12, fontWeight: chosen ? "700" : "600" }}>{option.label}</Text>
@@ -175,7 +189,7 @@ export function LabelChip({ label, t }: { label: string; t: Tokens }) {
 }
 
 export function MetaItem({ icon, label, value, t, chips }: { icon: string; label: string; value?: string; t: Tokens; chips?: string[] }) {
-  return <View style={{ flexBasis: 160, flexGrow: 1, gap: 5, minWidth: 140 }}>
+  return <View style={{ flexBasis: t.compact ? "44%" : 160, flexGrow: 1, gap: 5, minWidth: t.compact ? 100 : 140 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
       <Icon name={icon} size={11} color={t.colors.foregroundMuted} />
       <Text style={{ ...t.eyebrow, letterSpacing: 1, fontSize: 9.5 }}>{label}</Text>
@@ -198,14 +212,22 @@ export function Callout({ message, t, tone = "warning", action }: { message: str
 
 export function Skeleton({ t, width, height = 12, radius = 6 }: { t: Tokens; width: number | `${number}%`; height?: number; radius?: number }) {
   const opacity = useRef(new Animated.Value(0.45)).current;
+  const [reduceMotion, setReduceMotion] = useState(true);
   useEffect(() => {
+    let active = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((value) => { if (active) setReduceMotion(value); }, () => {});
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+    return () => { active = false; subscription.remove(); };
+  }, []);
+  useEffect(() => {
+    if (reduceMotion) { opacity.setValue(0.65); return; }
     const loop = Animated.loop(Animated.sequence([
       Animated.timing(opacity, { toValue: 1, duration: 750, useNativeDriver: true }),
       Animated.timing(opacity, { toValue: 0.45, duration: 750, useNativeDriver: true }),
     ]));
     loop.start();
     return () => loop.stop();
-  }, [opacity]);
+  }, [opacity, reduceMotion]);
   return <Animated.View style={{ width, height, borderRadius: radius, backgroundColor: t.colors.surface2, opacity }} />;
 }
 
