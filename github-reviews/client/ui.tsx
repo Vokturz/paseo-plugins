@@ -1,7 +1,7 @@
 // Uses the same form primitives and visual tokens as Linear tickets.
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import { Animated, Image, Pressable, Text, View } from "react-native";
+import { AccessibilityInfo, Animated, Image, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { Tokens } from "./design";
@@ -58,7 +58,7 @@ export function ActionButton({ title, icon, leading, onPress, t, primary = false
       opacity: disabled ? 0.4 : pressed ? 0.75 : 1,
     })}>
     {leading ?? (icon ? <Icon name={icon} size={size === "sm" ? 13 : 15} color={color} /> : null)}
-    {!iconOnly && <Text style={{ color, fontSize: size === "sm" ? 12 : 13, fontWeight: "600" }}>{title}</Text>}
+    {!iconOnly && <Text style={{ color, fontSize: size === "sm" ? 12 : 13, fontWeight: "600", flexShrink: 1 }}>{title}</Text>}
   </Interactive>;
 }
 
@@ -115,13 +115,22 @@ export function Callout({ message, t, tone = "warning", action }: { message: str
 
 export function Skeleton({ t, width, height = 12, radius = 6 }: { t: Tokens; width: number | `${number}%`; height?: number; radius?: number }) {
   const opacity = useRef(new Animated.Value(0.45)).current;
+  const [reduceMotion, setReduceMotion] = useState(true);
   useEffect(() => {
+    let mounted = true;
+    let changed = false;
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", (enabled) => { changed = true; setReduceMotion(enabled); });
+    void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => { if (mounted && !changed) setReduceMotion(enabled); }).catch(() => {});
+    return () => { mounted = false; subscription.remove(); };
+  }, []);
+  useEffect(() => {
+    if (reduceMotion) { opacity.setValue(0.6); return; }
     const loop = Animated.loop(Animated.sequence([
       Animated.timing(opacity, { toValue: 1, duration: 750, useNativeDriver: true }),
       Animated.timing(opacity, { toValue: 0.45, duration: 750, useNativeDriver: true }),
     ]));
     loop.start();
     return () => loop.stop();
-  }, [opacity]);
+  }, [opacity, reduceMotion]);
   return <Animated.View style={{ width, height, borderRadius: radius, backgroundColor: t.colors.surface2, opacity }} />;
 }

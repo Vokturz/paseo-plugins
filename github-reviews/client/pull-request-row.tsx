@@ -21,6 +21,7 @@ export function PullRequestRow({ pr, match, theme, layout, navigation, configure
   currentHead?: string | null; launcher: ReturnType<typeof useReviewLaunch>; onOpenPR: () => void;
   visible: boolean; first: boolean; now: number;
 } & Pick<PluginSurfaceProps, "theme" | "layout" | "navigation">) {
+  const [hovered, setHovered] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [selection, setSelection] = useState("");
   const [showInstructions, setShowInstructions] = useState(false);
@@ -63,36 +64,56 @@ export function PullRequestRow({ pr, match, theme, layout, navigation, configure
 
   return <View accessibilityElementsHidden={!visible} importantForAccessibility={visible ? "auto" : "no-hide-descendants"}
     style={{ display: visible ? "flex" : "none", gap: 10, padding: layout.compact ? 14 : 16,
-    borderTopWidth: first ? 0 : 1, borderTopColor: c.border }}>
-    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
-      <View style={{ paddingTop: 3 }}><Icon name="GitPullRequest" size={17} color={pr.draft ? c.foregroundMuted : c.statusSuccess} /></View>
-      <View style={{ flex: 1, minWidth: 0, gap: 5 }}>
-        <Interactive t={t} accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number}: ${pr.title}`} onPress={onOpenPR}>
-          <Text numberOfLines={expanded ? undefined : 2} style={{ color: c.foreground, fontSize: 15, lineHeight: 21, fontWeight: "600" }}>{pr.title}</Text>
-        </Interactive>
-        <Text style={t.muted}>{pr.repository} <Text style={{ fontWeight: "600" }}>#{pr.number}</Text> · {pr.author ? `@${pr.author}` : "Deleted account"}</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <Text accessibilityLabel={`Pull request updated ${absoluteTime(pr.updatedAt)}`} style={t.muted}>Updated {relativeTime(pr.updatedAt, now)}</Text>
-          <Text style={{ color: statusColor, fontSize: 12, fontWeight: "600" }}>{state?.busy ? "Starting review…" : progress?.label ?? (linked.loading ? "Checking reviews…" : linked.error ? "Review status unavailable" : "No Paseo review")}</Text>
-          {progress?.outdated && <Text style={{ ...t.muted, color: c.statusWarning }}>New commits</Text>}
-          {pr.draft && <Text style={{ ...t.muted, color: c.statusWarning }}>Draft · local review only</Text>}
+    borderTopWidth: first ? 0 : 1, borderTopColor: c.border, backgroundColor: expanded ? c.surface0 : hovered ? c.surface2 : c.surface1 }}>
+    <View onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}
+      style={{ flexDirection: layout.compact ? "column" : "row", alignItems: layout.compact ? "stretch" : "center", gap: 16 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12, flex: layout.compact ? undefined : 1, minWidth: 0 }}>
+        <View style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: c.surface0, alignItems: "center", justifyContent: "center" }}><Icon name="GitPullRequest" size={17} color={pr.draft ? c.foregroundMuted : c.statusSuccess} /></View>
+        <View style={{ flex: 1, minWidth: 0, gap: 5 }}>
+          <Interactive t={t} accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number}: ${pr.title}`} onPress={onOpenPR} style={({ pressed }) => ({ justifyContent: "center", opacity: pressed ? 0.65 : 1 })}>
+            <Text numberOfLines={expanded ? undefined : 2} style={{ color: c.foreground, fontSize: 15, lineHeight: 21, fontWeight: "600" }}>{pr.title}</Text>
+          </Interactive>
+          <Text style={t.muted}>{pr.repository} <Text style={{ fontWeight: "600" }}>#{pr.number}</Text> · {pr.author ? `@${pr.author}` : "Deleted account"}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <Text accessibilityLabel={`Pull request updated ${absoluteTime(pr.updatedAt)}`} style={t.muted}>Updated {relativeTime(pr.updatedAt, now)}</Text>
+            <View style={{ ...t.chip, backgroundColor: c.surface0, maxWidth: "100%" }}>
+              <Text style={{ color: statusColor, fontSize: 12, fontWeight: "600", lineHeight: 18 }}>{state?.busy ? "Starting review…" : progress?.label ?? (linked.loading ? "Checking reviews…" : linked.error ? "Review status unavailable" : "Not reviewed in Paseo")}</Text>
+            </View>
+            {progress?.outdated && <Text style={{ ...t.muted, color: c.statusWarning }}>New commits</Text>}
+            {pr.draft && <Text style={{ ...t.muted, color: c.statusWarning }}>Draft · local review only</Text>}
+          </View>
         </View>
       </View>
-    </View>
-    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, paddingLeft: 27 }}>
-      <ActionButton title={label} size="sm" primary t={t}
-        icon={action.kind === "view-review" || action.kind === "open-pr" ? "ExternalLink" : action.kind === "open-agent" ? "ArrowUpRight" : "Bot"}
-        disabled={action.kind === "starting" || action.kind === "checking" || (action.kind === "configure" && !onOpenReviewer)} onPress={primary} />
-      <Interactive t={t} accessibilityRole="button" accessibilityLabel={`${expanded ? "Hide" : "Show"} details for ${pr.repository} #${pr.number}`}
-        accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)}
-        style={({ pressed }) => ({ minHeight: t.touchTarget, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 8, backgroundColor: pressed ? c.surface2 : "transparent" })}>
-        <Text style={t.muted}>{expanded ? "Hide details" : "Details"}{linked.agents.length > 1 ? ` · ${linked.agents.length} runs` : ""}</Text>
-        <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={13} color={c.foregroundMuted} />
-      </Interactive>
+      <View style={{ flexDirection: layout.compact ? "row" : "column", alignItems: layout.compact ? "center" : "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 8, paddingLeft: layout.compact ? 44 : 0, maxWidth: layout.compact ? undefined : "35%" }}>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, maxWidth: "100%" }}>
+        <ActionButton title={label} size="sm" t={t}
+          icon={action.kind === "view-review" || action.kind === "open-pr" ? "ExternalLink" : action.kind === "open-agent" ? "ArrowUpRight" : "Bot"}
+          disabled={action.kind === "starting" || action.kind === "checking" || (action.kind === "configure" && !onOpenReviewer)} onPress={primary} />
+          {canLaunch && <ActionButton title={instructions.length > 0 ? "Edit instructions" : "Add instructions"} icon="MessageSquarePlus" size="sm" t={t}
+            disabled={state?.busy} onPress={() => setShowInstructions(true)} />}
+        </View>
+        <Interactive t={t} accessibilityRole="button" accessibilityLabel={`${expanded ? "Hide" : "Show"} details for ${pr.repository} #${pr.number}`}
+          accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)}
+          style={({ pressed }) => ({ minHeight: t.touchTarget, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 8, backgroundColor: pressed ? c.surface2 : "transparent" })}>
+          <Text style={t.muted}>{expanded ? "Hide details" : "Details"}{linked.agents.length > 1 ? ` · ${linked.agents.length} runs` : ""}</Text>
+          <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={13} color={c.foregroundMuted} />
+        </Interactive>
+      </View>
     </View>
     {state?.error && <Text accessibilityRole="alert" style={{ ...t.muted, color: c.statusDanger }}>{state.error}</Text>}
     {linkError && <Text accessibilityRole="alert" style={{ ...t.muted, color: c.statusDanger }}>{linkError}</Text>}
-    {expanded && <View style={{ borderTopWidth: 1, borderTopColor: c.border, paddingTop: 12, gap: 12 }}>
+        {canLaunch && (showInstructions || instructions.length > 0) && <View style={{ gap: 8 }}>
+          <Text style={t.label}>Extra instructions for the next run</Text>
+          <TextInput accessibilityLabel="Extra instructions or context" multiline textAlignVertical="top" editable={!state?.busy}
+            value={instructions} onChangeText={(value) => launcher.setInstructions(pr, value)} maxLength={MAX_REVIEW_INSTRUCTIONS_LENGTH}
+            placeholder="For example: Focus on session expiry and concurrent requests."
+            placeholderTextColor={c.foregroundMuted} style={{ ...t.input, minHeight: 90, lineHeight: 20 }} />
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <Text style={t.muted}>{instructions.length.toLocaleString()} / {MAX_REVIEW_INSTRUCTIONS_LENGTH.toLocaleString()}</Text>
+            <ActionButton title="Clear instructions" size="sm" t={t} disabled={state?.busy} onPress={() => { launcher.setInstructions(pr, ""); setShowInstructions(false); }} />
+          </View>
+        </View>}
+    {expanded && <View style={{ borderTopWidth: 1, borderTopColor: c.border, paddingTop: 16, gap: 16 }}>
       <Text selectable style={t.muted}>PR updated {absoluteTime(pr.updatedAt)}</Text>
       {currentHead && <Text selectable style={t.mono}>Current head {currentHead}</Text>}
       <ProjectAvailability theme={theme} match={match} />
@@ -104,17 +125,7 @@ export function PullRequestRow({ pr, match, theme, layout, navigation, configure
       </View>}
       {pr.draft && <Text style={{ ...t.muted, color: c.statusWarning }}>This run saves findings locally and cannot publish to GitHub. Start a new run after marking the PR ready if you want to publish.</Text>}
       {canLaunch && <>
-        {(showInstructions || instructions.length > 0) ? <View style={{ gap: 8 }}>
-          <Text style={t.label}>Extra instructions for the next run</Text>
-          <TextInput accessibilityLabel="Extra instructions or context" multiline textAlignVertical="top" editable={!state?.busy}
-            value={instructions} onChangeText={(value) => launcher.setInstructions(pr, value)} maxLength={MAX_REVIEW_INSTRUCTIONS_LENGTH}
-            placeholder="For example: Focus on session expiry and concurrent requests."
-            placeholderTextColor={c.foregroundMuted} style={{ ...t.input, minHeight: 90, lineHeight: 20 }} />
-          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <Text style={t.muted}>{instructions.length.toLocaleString()} / {MAX_REVIEW_INSTRUCTIONS_LENGTH.toLocaleString()}</Text>
-            <ActionButton title="Clear instructions" size="sm" t={t} disabled={state?.busy} onPress={() => { launcher.setInstructions(pr, ""); setShowInstructions(false); }} />
-          </View>
-        </View> : <ActionButton title="Add instructions" icon="MessageSquarePlus" size="sm" t={t} disabled={state?.busy} onPress={() => setShowInstructions(true)} />}
+
         {hasReview && <ActionButton title={state?.error ? "Retry review" : pr.draft ? "Review draft again locally" : "Run again"} icon="RotateCcw" size="sm" t={t}
           disabled={state?.busy || Boolean(activeAgent) || Boolean(linked.pendingCreatedAgentId) || linked.loading || Boolean(linked.error) || !projectId || !configured} onPress={start} />}
         {!configured && onOpenReviewer && <ActionButton title="Configure reviewer" icon="Settings2" size="sm" t={t} onPress={onOpenReviewer} />}

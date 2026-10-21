@@ -1,4 +1,4 @@
-import { Interactive } from "./ui";
+import { ActionButton, Interactive, Skeleton } from "./ui";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
@@ -47,8 +47,9 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
   const generation = useRef(0);
   const currentPage = useRef(1);
   const c = theme.colors;
-  const compact = layout.compact;
-  const t = tokensFor(theme, layout);
+  const [surfaceWidth, setSurfaceWidth] = useState(0);
+  const compact = layout.compact || surfaceWidth < 680;
+  const t = tokensFor(theme, { ...layout, compact });
   const recovery = error ? loadRecovery(error) : null;
   const visiblePRs = searchPage(result?.pullRequests ?? [], search);
   const visibleIds = new Set(visiblePRs.map((pr) => pr.id));
@@ -139,57 +140,79 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
   };
 
   const button = (title: string, onPress: () => void, disabled = false, icon?: string) => (
-    <Interactive t={t} accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, minHeight: Math.max(40, t.touchTarget), paddingHorizontal: 13,
-        borderWidth: 1, borderColor: c.border, borderRadius: 10, backgroundColor: pressed ? c.surface2 : c.surface1, opacity: disabled ? 0.45 : 1 })}>
-      {icon && <Icon name={icon} size={14} color={c.foreground} />}
-      <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>{title}</Text>
-    </Interactive>
+    <ActionButton t={t} title={title} onPress={onPress} disabled={disabled} icon={icon} />
   );
 
-  return <ReviewOutcomesProvider revision={result?.fetchedAt}><ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 28, alignItems: "center" }}>
-    <View style={{ width: "100%", maxWidth: 1050, gap: 18 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
-        <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: c.surface2, alignItems: "center", justifyContent: "center" }}>
-          <Icon name="GitPullRequest" size={23} color={c.accent} />
+  return <ReviewOutcomesProvider revision={result?.fetchedAt}><ScrollView onLayout={({ nativeEvent }) => setSurfaceWidth(nativeEvent.layout.width)} keyboardShouldPersistTaps="handled" style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 28, alignItems: "center" }}>
+    <View style={{ width: "100%", maxWidth: 1050, gap: 20 }}>
+      <View style={{ flexDirection: compact ? "column" : "row", alignItems: compact ? "stretch" : "center", gap: 16 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, flex: compact ? undefined : 1, minWidth: 0 }}>
+          <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: c.surface2, alignItems: "center", justifyContent: "center" }}>
+            <Icon name="GitPullRequest" size={23} color={c.accent} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+            <Text style={t.eyebrow}>GITHUB · CODE REVIEW</Text>
+            <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: compact ? 23 : 28, fontWeight: "700" }}>GitHub reviews</Text>
+            <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{scope === "created" ? "Open pull requests you created" : "Your review queue, from request to published findings"}</Text>
+          </View>
         </View>
-        <View style={{ flex: 1, minWidth: 180, gap: 4 }}>
-          <Text accessibilityRole="header" style={{ color: c.foreground, fontSize: compact ? 23 : 28, fontWeight: "700" }}>GitHub reviews</Text>
-          <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{scope === "created" ? "Open pull requests you created" : "Open pull requests requested for review or already reviewed by you"}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          {loading && <ActivityIndicator accessibilityLabel="Loading pull requests" size="small" color={c.accent} />}
+          {onOpenReviewer && button("Reviewer setup", onOpenReviewer, false, "Bot")}
+          {button(loading ? "Refreshing…" : "Refresh", () => void load(currentPage.current, true), loading, "RefreshCw")}
         </View>
-        {loading && <ActivityIndicator accessibilityLabel="Loading pull requests" size="small" color={c.accent} />}
-        {onOpenReviewer && button("Reviewer setup", onOpenReviewer, false, "Bot")}
-        {button("Refresh", () => void load(currentPage.current, true), loading, "RefreshCw")}
       </View>
 
-      <View accessibilityRole="tablist" accessibilityLabel="Pull request lists" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {([{ scope: "review-requested", title: "My reviews", icon: "GitPullRequest" }, { scope: "created", title: "Created by me", icon: "GitBranch" }] as const).map((tab) => {
-          const selected = scope === tab.scope;
-          return <Interactive t={t} key={tab.scope} accessibilityRole="tab" accessibilityLabel={tab.title} accessibilityState={{ selected }} onPress={() => switchScope(tab.scope)}
-            style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 7, minHeight: Math.max(40, t.touchTarget), paddingHorizontal: 13, borderRadius: 10,
-              borderWidth: 1, borderColor: selected ? c.accent : c.border, backgroundColor: selected || pressed ? c.surface2 : c.surface1 })}>
-            <Icon name={tab.icon} size={14} color={selected ? c.accent : c.foregroundMuted} />
-            <Text style={{ color: selected ? c.accent : c.foregroundMuted, fontSize: 13, fontWeight: "600" }}>{tab.title}</Text>
-          </Interactive>;
-        })}
-      </View>
-      <FiltersPanel theme={theme} layout={layout} settings={settings} leading={scope === "review-requested" ? <View style={{ width: compact ? "100%" : 260 }}>
-        <ChoicePicker label="Show reviews" placeholder="All my reviews" options={reviewChoices} value={reviewFilter} t={t} size="sm"
-          onChange={(id) => { const choice = reviewChoices.find((item) => item.id === id); if (choice) switchFilter(choice.id); }} />
-      </View> : undefined} />
-
-      <View style={{ gap: 5 }}>
-        <Text style={t.label}>Search this page</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 11, backgroundColor: c.surface1, ...(searchFocused ? t.focusRing : {}) }}>
-          <Icon name="Search" size={15} color={c.foregroundMuted} />
-          <TextInput accessibilityLabel="Search pull requests on this page" placeholder="Search this page by title, repository, author or #number"
-            placeholderTextColor={c.foregroundMuted} value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
-            onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
-            style={{ flex: 1, minWidth: 0, minHeight: Math.max(40, t.touchTarget), paddingVertical: 9, color: c.foreground, fontSize: 13 }} />
-          {!!search && <Interactive t={t} accessibilityRole="button" accessibilityLabel="Clear page search" onPress={() => setSearch("")} style={{ alignItems: "center", justifyContent: "center" }}><Icon name="X" size={14} color={c.foregroundMuted} /></Interactive>}
+      <View style={{ ...t.card, padding: compact ? 12 : 16, gap: 16 }}>
+        <View accessibilityRole="tablist" accessibilityLabel="Pull request lists" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {([{ scope: "review-requested", title: "My reviews", icon: "GitPullRequest" }, { scope: "created", title: "Created by me", icon: "GitBranch" }] as const).map((tab) => {
+            const selected = scope === tab.scope;
+            return <Interactive t={t} key={tab.scope} accessibilityRole="tab" accessibilityLabel={tab.title} accessibilityState={{ selected }} onPress={() => switchScope(tab.scope)}
+              style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 7, minHeight: Math.max(40, t.touchTarget), paddingHorizontal: 13, borderRadius: 10, flex: compact ? 1 : undefined, justifyContent: "center",
+                borderWidth: 1, borderColor: selected ? c.accent : "transparent", backgroundColor: selected || pressed ? c.surface2 : "transparent" })}>
+              <Icon name={tab.icon} size={14} color={selected ? c.accent : c.foregroundMuted} />
+              <Text style={{ color: selected ? c.accent : c.foreground, fontSize: 13, fontWeight: "600", flexShrink: 1 }}>{tab.title}</Text>
+            </Interactive>;
+          })}
         </View>
-        <Text accessibilityLiveRegion="polite" style={{ color: c.foregroundMuted, fontSize: 11 }}>{search.trim() && result ? `${visiblePRs.length} of ${result.pullRequests.length} PRs on this page` : "Searches the current page only"}</Text>
+        <FiltersPanel theme={theme} layout={{ ...layout, compact }} settings={settings} leading={scope === "review-requested" ? <View style={{ width: compact ? "100%" : 260 }}>
+          <ChoicePicker label="Show reviews" placeholder="All my reviews" options={reviewChoices} value={reviewFilter} t={t} size="sm"
+            onChange={(id) => { const choice = reviewChoices.find((item) => item.id === id); if (choice) switchFilter(choice.id); }} />
+        </View> : undefined} />
+
+        <View style={{ gap: 5 }}>
+          <Text style={t.label}>Search this page</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 11, backgroundColor: c.surface1, ...(searchFocused ? t.focusRing : {}) }}>
+            <Icon name="Search" size={15} color={c.foregroundMuted} />
+            <TextInput accessibilityLabel="Search pull requests on this page" placeholder="Title, repository, @author or #number"
+              placeholderTextColor={c.foregroundMuted} value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
+              onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
+              style={{ flex: 1, minWidth: 0, minHeight: Math.max(40, t.touchTarget), paddingVertical: 9, color: c.foreground, fontSize: 13 }} />
+            {!!search && <Interactive t={t} accessibilityRole="button" accessibilityLabel="Clear page search" onPress={() => setSearch("")} style={{ alignItems: "center", justifyContent: "center" }}><Icon name="X" size={14} color={c.foregroundMuted} /></Interactive>}
+          </View>
+          <Text accessibilityLiveRegion="polite" style={{ color: c.foregroundMuted, fontSize: 12 }}>{search.trim() && result ? `${visiblePRs.length} of ${result.pullRequests.length} PRs on this page` : "Searches the current page only"}</Text>
+        </View>
+
       </View>
+
+      {reviewer.status === "ready" && !configured && onOpenReviewer && <View style={{ ...t.card, padding: 16, gap: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Icon name="Bot" size={20} color={c.accent} />
+          <View style={{ flex: 1, gap: 4 }}>
+            <Text style={t.strong}>Set up your reviewer</Text>
+            <Text style={t.muted}>Choose a provider and model to start reviewing pull requests with an agent.</Text>
+          </View>
+        </View>
+        <ActionButton t={t} title="Set up reviewer" icon="ArrowRight" primary onPress={onOpenReviewer} />
+      </View>}
+
+      {loading && !result && <View accessible accessibilityRole="progressbar" accessibilityLabel="Loading pull requests" accessibilityState={{ busy: true }} style={{ ...t.card, padding: 0, overflow: "hidden" }}>
+        {[0, 1, 2].map((index) => <View key={index} accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ padding: 20, gap: 12, borderTopWidth: index ? 1 : 0, borderTopColor: c.border }}>
+          <Skeleton t={t} width="75%" height={16} />
+          <Skeleton t={t} width="45%" />
+          <Skeleton t={t} width="60%" />
+        </View>)}
+      </View>}
 
       {result && <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 6 }}>
         <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>@{result.login} · {result.totalCount}{result.incomplete || (result.reviewFilter === "outdated" && result.capped) ? "+" : ""} {result.totalCount === 1 ? "open PR" : "open PRs"}{result.reviewFilter === "outdated" ? " with new commits" : ""}</Text>
@@ -225,12 +248,12 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
 
       {result && result.pullRequests.length > 0 && <View style={{ display: visiblePRs.length ? "flex" : "none", borderWidth: 1, borderColor: c.border, borderRadius: 14, overflow: "hidden", backgroundColor: c.surface1 }}>
         {result.pullRequests.map((pr) => <PullRequestRow key={pr.id} pr={pr} visible={visibleIds.has(pr.id)} first={visiblePRs[0]?.id === pr.id} now={now}
-          match={result.projectsByRepository[pr.repository.toLowerCase()]} theme={theme} layout={layout}
+          match={result.projectsByRepository[pr.repository.toLowerCase()]} theme={theme} layout={{ ...layout, compact }}
           currentHead={result.headsByPr[prKey(pr.repository, pr.number)]} navigation={navigation} configured={configured}
           onOpenReviewer={onOpenReviewer} launcher={launcher} onOpenPR={() => void openPR(pr.url)} />)}
       </View>}
 
-      {result && (result.page > 1 || result.nextPage) && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+      {result && (result.page > 1 || result.nextPage) && <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
         {button("Previous", () => void load(result.page - 1), loading || result.page === 1, "ChevronLeft")}
         <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Page {result.page} · {PAGE_SIZE} per page</Text>
         {button("Next", () => { if (result.nextPage) void load(result.nextPage); }, loading || !result.nextPage, "ChevronRight")}

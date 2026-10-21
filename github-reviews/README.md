@@ -90,8 +90,15 @@ pages, and a refresh that detects an account switch clears the old account's cac
 
 ## List layout and search
 
+Tabs, saved filters, and page search are grouped in one toolbar. Narrow views
+stack the header controls and row actions; wide views place actions beside each
+PR. Review status appears in a labeled badge, and expanded details use a separate
+surface. Initial loads show placeholders that respect reduced motion. If no
+reviewer is configured, a setup card explains the next step.
+
 Rows start collapsed. **Details** reveals project availability and selection,
-labels, full commit IDs, exact dates, extra instructions, and review history.
+labels, full commit IDs, exact dates, and review history. **Add instructions**
+beside the review action opens the per-PR instructions field directly.
 The main action is **Start review** for a new run, **Open agent** while reviewing
 or when an agent needs attention, and **View review** for a verified publication.
 **Run again** is a secondary action in Details and is disabled while a review is
@@ -189,7 +196,7 @@ presentation; the agent still receives the entire saved prompt, extra context,
 snapshot, and required publication instructions. Messages without the card marker,
 including older launches, keep Paseo's normal rendering.
 
-Open **Details → Add instructions** before launching to enter optional instructions or
+Select **Add instructions** beside the review action before launching to enter optional instructions or
 context for that PR, such as "Look closely at session expiry and concurrent
 requests." This text is added to the saved review prompt for the run; it does
 not replace or change your saved reviewer setup. Up to 8,000 characters are

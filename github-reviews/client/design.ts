@@ -14,7 +14,7 @@ export function tokensFor(theme: Theme, layout: Layout) {
   return {
     compact,
     colors: c,
-    touchTarget: layout.platform === "android" ? 48 : layout.platform === "ios" ? 44 : 32,
+    touchTarget: layout.platform === "android" ? 48 : layout.platform === "ios" || compact ? 44 : 32,
     radius: { sm: 8, md: 10, lg: 14, xl: 18 },
     card: {
       backgroundColor: c.surface1,
