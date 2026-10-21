@@ -13,6 +13,7 @@ export function tokensFor(theme: Theme, layout: Layout) {
   const compact = layout.compact;
   return {
     compact,
+    touchTarget: layout.platform === "android" ? 48 : layout.platform === "ios" || compact ? 44 : 36,
     colors: c,
     radius: { sm: 8, md: 10, lg: 14, xl: 18 },
     card: {
@@ -30,14 +31,14 @@ export function tokensFor(theme: Theme, layout: Layout) {
       borderRadius: 10,
       paddingHorizontal: 12,
       paddingVertical: 11,
-      fontSize: 14,
+      fontSize: compact ? 16 : 14,
     },
     focusRing: { borderColor: c.accent },
-    eyebrow: { color: c.foregroundMuted, fontSize: 10, fontWeight: "700" as const, letterSpacing: 1.6 },
+    eyebrow: { color: c.foregroundMuted, fontSize: 12, fontWeight: "600" as const, letterSpacing: 0.8 },
     title: { color: c.foreground, fontSize: compact ? 24 : 28, fontWeight: "700" as const, letterSpacing: -0.6 },
     cardTitle: { color: c.foreground, fontSize: compact ? 20 : 22, fontWeight: "700" as const, letterSpacing: -0.3, lineHeight: compact ? 27 : 30 },
     heading: { color: c.foreground, fontSize: 16, fontWeight: "700" as const },
-    body: { color: c.foreground, fontSize: 14, lineHeight: 22 },
+    body: { color: c.foreground, fontSize: compact ? 16 : 14, lineHeight: compact ? 24 : 22 },
     strong: { color: c.foreground, fontSize: 14, fontWeight: "600" as const, lineHeight: 21 },
     label: { color: c.foreground, fontSize: 12, fontWeight: "600" as const },
     muted: { color: c.foregroundMuted, fontSize: 12.5, lineHeight: 19 },

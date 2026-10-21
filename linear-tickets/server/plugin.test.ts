@@ -12,6 +12,7 @@ import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
 import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, TEAM_STATES_QUERY, UPDATE_ISSUE_STATE_QUERY, resolveStartedState, listIssueFilter, type Post, type TeamState } from "./linear";
 import { cachedOverviewRpc, countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
+import { parseTicketIntro } from "../shared/ticket-intro";
 
 // GraphQL-shaped fixture: workflow state, priority label, label connection,
 // and the relationship fields the detail query requests.
@@ -621,6 +622,7 @@ test("a saved default prompt template shapes the agent's first prompt", async ()
   assert.ok(captured?.startsWith("Handle ENG-42: Fix the sign-in flow."));
   assert.ok(captured?.includes("Add a regression check."));
   assert.ok(captured?.includes("Regression on mobile"));
+  assert.equal(parseTicketIntro(captured!)?.intro.identifier, "ENG-42");
   // Changing the template is a new launch, not a retry of the same request.
   await assert.rejects(launcher.start({ ...input, instructions: "" }, paseo, { promptTemplate: "other {{context}}" }), /already been used/);
 });

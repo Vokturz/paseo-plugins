@@ -1,6 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { RpcInput } from "@getpaseo/plugin";
-import { launchAgentRpc } from "../shared/contracts";
+import { launchAgentRpc, type TicketDetail } from "../shared/contracts";
+import { ticketIntroMarker, ticketIntroSchema } from "../shared/ticket-intro";
 import { buildPrompt } from "./context";
 import type { LinearService } from "./linear";
 import { findProject, readBranches } from "./projects";
@@ -9,6 +10,13 @@ import { TICKET_MCP_NAME, ticketMcpServer, writeTicketMcpScript } from "./ticket
 type Start = RpcInput<typeof launchAgentRpc>;
 type Result = { agentId: string; warnings: string[] };
 type Options = { promptTemplate?: string; markInProgress?: boolean; linearAccess?: boolean };
+
+export function ticketLaunchPrompt(detail: TicketDetail, instructions: string, options: Options = {}): string {
+  const prompt = buildPrompt(detail, instructions, options.promptTemplate, options.linearAccess ?? false);
+  const intro = ticketIntroSchema.safeParse({ ...detail.issue, linearAccess: options.linearAccess ?? false,
+    focus: Array.from(instructions.trim()).slice(0, 280).join("") + (Array.from(instructions.trim()).length > 280 ? "…" : "") });
+  return intro.success ? `${prompt}\n\n${ticketIntroMarker(intro.data)}` : prompt;
+}
 
 // Linear computes the branch name with the workspace's branch-format setting, so it is
 // the name users expect — but a stored value is not guaranteed to be a safe git ref.
@@ -123,7 +131,7 @@ export class Launcher {
     const agent = await workspace.agents.create({
       config: { provider: input.provider, modeId: input.modeId, thinkingOptionId: input.thinkingOptionId, ...(mcpServers ? { mcpServers } : {}) },
       title,
-      prompt: buildPrompt(detail, input.instructions, options.promptTemplate, options.linearAccess ?? false),
+      prompt: ticketLaunchPrompt(detail, input.instructions, options),
       requestId: input.requestId,
       clientMessageId: input.requestId,
       labels: { "linear.issueId": detail.issue.id, "linear.identifier": detail.issue.identifier, "linear.url": detail.issue.url },
