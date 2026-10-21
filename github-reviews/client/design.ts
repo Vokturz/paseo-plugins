@@ -14,6 +14,7 @@ export function tokensFor(theme: Theme, layout: Layout) {
   return {
     compact,
     colors: c,
+    touchTarget: layout.platform === "android" ? 48 : layout.platform === "ios" ? 44 : 32,
     radius: { sm: 8, md: 10, lg: 14, xl: 18 },
     card: {
       backgroundColor: c.surface1,
@@ -32,7 +33,7 @@ export function tokensFor(theme: Theme, layout: Layout) {
       paddingVertical: 11,
       fontSize: 14,
     },
-    focusRing: { borderColor: c.accent },
+    focusRing: { outlineColor: c.accent, outlineStyle: "solid" as const, outlineWidth: 2, outlineOffset: 2 },
     eyebrow: { color: c.foregroundMuted, fontSize: 10, fontWeight: "700" as const, letterSpacing: 1.6 },
     title: { color: c.foreground, fontSize: compact ? 24 : 28, fontWeight: "700" as const, letterSpacing: -0.6 },
     cardTitle: { color: c.foreground, fontSize: compact ? 20 : 22, fontWeight: "700" as const, letterSpacing: -0.3, lineHeight: compact ? 27 : 30 },

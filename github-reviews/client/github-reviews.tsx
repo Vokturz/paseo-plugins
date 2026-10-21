@@ -1,8 +1,9 @@
+import { Interactive } from "./ui";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, AppState, ScrollView, Text, TextInput, View } from "react-native";
 import { listReviewsRpc, PAGE_SIZE, POLL_INTERVAL_MS, type PullRequestScope, type ReviewFilter, type ReviewPage } from "../shared/contracts";
 import { filterSettings } from "../shared/filters";
 import { FiltersPanel } from "./filters";
@@ -40,6 +41,7 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
   const [error, setError] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [now, setNow] = useState(Date.now);
   const inFlight = useRef(false);
   const generation = useRef(0);
@@ -137,12 +139,12 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
   };
 
   const button = (title: string, onPress: () => void, disabled = false, icon?: string) => (
-    <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, minHeight: 40, paddingHorizontal: 13,
+    <Interactive t={t} accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
+      style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, minHeight: Math.max(40, t.touchTarget), paddingHorizontal: 13,
         borderWidth: 1, borderColor: c.border, borderRadius: 10, backgroundColor: pressed ? c.surface2 : c.surface1, opacity: disabled ? 0.45 : 1 })}>
       {icon && <Icon name={icon} size={14} color={c.foreground} />}
       <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>{title}</Text>
-    </Pressable>
+    </Interactive>
   );
 
   return <ReviewOutcomesProvider revision={result?.fetchedAt}><ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 28, alignItems: "center" }}>
@@ -163,26 +165,28 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
       <View accessibilityRole="tablist" accessibilityLabel="Pull request lists" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {([{ scope: "review-requested", title: "My reviews", icon: "GitPullRequest" }, { scope: "created", title: "Created by me", icon: "GitBranch" }] as const).map((tab) => {
           const selected = scope === tab.scope;
-          return <Pressable key={tab.scope} accessibilityRole="tab" accessibilityLabel={tab.title} accessibilityState={{ selected }} onPress={() => switchScope(tab.scope)}
-            style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 7, minHeight: 40, paddingHorizontal: 13, borderRadius: 10,
+          return <Interactive t={t} key={tab.scope} accessibilityRole="tab" accessibilityLabel={tab.title} accessibilityState={{ selected }} onPress={() => switchScope(tab.scope)}
+            style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 7, minHeight: Math.max(40, t.touchTarget), paddingHorizontal: 13, borderRadius: 10,
               borderWidth: 1, borderColor: selected ? c.accent : c.border, backgroundColor: selected || pressed ? c.surface2 : c.surface1 })}>
             <Icon name={tab.icon} size={14} color={selected ? c.accent : c.foregroundMuted} />
             <Text style={{ color: selected ? c.accent : c.foregroundMuted, fontSize: 13, fontWeight: "600" }}>{tab.title}</Text>
-          </Pressable>;
+          </Interactive>;
         })}
       </View>
-      <FiltersPanel theme={theme} settings={settings} leading={scope === "review-requested" ? <View style={{ width: compact ? "100%" : 260 }}>
+      <FiltersPanel theme={theme} layout={layout} settings={settings} leading={scope === "review-requested" ? <View style={{ width: compact ? "100%" : 260 }}>
         <ChoicePicker label="Show reviews" placeholder="All my reviews" options={reviewChoices} value={reviewFilter} t={t} size="sm"
           onChange={(id) => { const choice = reviewChoices.find((item) => item.id === id); if (choice) switchFilter(choice.id); }} />
       </View> : undefined} />
 
       <View style={{ gap: 5 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 11, backgroundColor: c.surface1 }}>
+        <Text style={t.label}>Search this page</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 11, backgroundColor: c.surface1, ...(searchFocused ? t.focusRing : {}) }}>
           <Icon name="Search" size={15} color={c.foregroundMuted} />
           <TextInput accessibilityLabel="Search pull requests on this page" placeholder="Search this page by title, repository, author or #number"
             placeholderTextColor={c.foregroundMuted} value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
-            style={{ flex: 1, minWidth: 0, minHeight: 40, paddingVertical: 9, color: c.foreground, fontSize: 13 }} />
-          {!!search && <Pressable accessibilityRole="button" accessibilityLabel="Clear page search" onPress={() => setSearch("")} style={{ padding: 8 }}><Icon name="X" size={14} color={c.foregroundMuted} /></Pressable>}
+            onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
+            style={{ flex: 1, minWidth: 0, minHeight: Math.max(40, t.touchTarget), paddingVertical: 9, color: c.foreground, fontSize: 13 }} />
+          {!!search && <Interactive t={t} accessibilityRole="button" accessibilityLabel="Clear page search" onPress={() => setSearch("")} style={{ alignItems: "center", justifyContent: "center" }}><Icon name="X" size={14} color={c.foregroundMuted} /></Interactive>}
         </View>
         <Text accessibilityLiveRegion="polite" style={{ color: c.foregroundMuted, fontSize: 11 }}>{search.trim() && result ? `${visiblePRs.length} of ${result.pullRequests.length} PRs on this page` : "Searches the current page only"}</Text>
       </View>

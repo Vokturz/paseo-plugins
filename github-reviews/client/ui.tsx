@@ -1,6 +1,6 @@
 // Uses the same form primitives and visual tokens as Linear tickets.
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Animated, Image, Pressable, Text, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
@@ -10,6 +10,16 @@ import { providerPng } from "./provider-icons";
 type Theme = PluginSurfaceProps["theme"];
 
 const SurfaceContext = createContext<{ t: Tokens; busy: boolean } | null>(null);
+
+/** Keeps keyboard focus distinct from selection and makes small actions reachable on mobile. */
+export function Interactive({ t, style, onFocus, onBlur, ...props }: ComponentProps<typeof Pressable> & { t: Tokens }) {
+  const [focused, setFocused] = useState(false);
+  return <Pressable {...props}
+    onFocus={(event) => { setFocused(true); onFocus?.(event); }}
+    onBlur={(event) => { setFocused(false); onBlur?.(event); }}
+    style={(state) => [{ minHeight: t.touchTarget, minWidth: t.touchTarget, borderRadius: t.radius.sm },
+      typeof style === "function" ? style(state) : style, focused && !props.disabled ? t.focusRing : undefined]} />;
+}
 
 /** Shares the surface tokens and its global busy flag so every action button dims consistently. */
 export function SurfaceProvider({ t, busy, children }: { t: Tokens; busy: boolean; children: ReactNode }) {
@@ -34,23 +44,22 @@ export function ActionButton({ title, icon, leading, onPress, t, primary = false
   const c = t.colors;
   const color = primary ? c.accentForeground : tone === "danger" ? c.statusDanger : chosen ? c.accent : c.foreground;
   const active = hovered || chosen;
-  return <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, selected: chosen }} disabled={disabled} onPress={onPress}
+  return <Interactive t={t} accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled, selected: chosen }} disabled={disabled} onPress={onPress}
     onHoverIn={() => setHovered(true)} onHoverOut={() => setHovered(false)}
     style={({ pressed }) => ({
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7,
-      alignSelf: stretch ? "stretch" : "flex-start", minHeight: size === "sm" ? 32 : 40,
+      alignSelf: stretch ? "stretch" : "flex-start", minHeight: Math.max(t.touchTarget, size === "sm" ? 32 : 40),
       paddingHorizontal: iconOnly ? 0 : size === "sm" ? 10 : primary ? 16 : 12,
-      width: iconOnly ? (size === "sm" ? 32 : 40) : undefined,
+      width: iconOnly ? Math.max(t.touchTarget, size === "sm" ? 32 : 40) : undefined,
       borderRadius: t.radius.md, borderWidth: 1,
-      // Selection is the only persistent accent state. React Native Web can retain
-      // focus after another filter is pressed, which otherwise makes two chips look selected.
+      // Focus gets an outer ring; the selected fill remains independent.
       borderColor: chosen || primary ? c.accent : c.border,
       backgroundColor: primary ? c.accent : active || pressed ? c.surface2 : c.surface1,
       opacity: disabled ? 0.4 : pressed ? 0.75 : 1,
     })}>
     {leading ?? (icon ? <Icon name={icon} size={size === "sm" ? 13 : 15} color={color} /> : null)}
     {!iconOnly && <Text style={{ color, fontSize: size === "sm" ? 12 : 13, fontWeight: "600" }}>{title}</Text>}
-  </Pressable>;
+  </Interactive>;
 }
 
 // Brand marks ship their own colors, so they sit on a neutral chip instead of the accent fill.

@@ -2,7 +2,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Text, TextInput, View } from "react-native";
 import { MAX_REVIEW_INSTRUCTIONS_LENGTH, type PullRequest } from "../shared/contracts";
 import type { RepositoryProjects } from "../shared/projects";
 import { ChoicePicker } from "./choice-picker";
@@ -12,7 +12,7 @@ import { ProjectAvailability } from "./project-availability";
 import type { useReviewLaunch } from "./review-action";
 import { reviewProgress } from "./review-outcomes";
 import { reviewPrimaryAction } from "./review-primary-action";
-import { ActionButton } from "./ui";
+import { ActionButton, Interactive } from "./ui";
 import { useReviewAgents } from "./use-review-agents";
 import { useReviewOutcomes } from "./use-review-outcomes";
 
@@ -67,9 +67,9 @@ export function PullRequestRow({ pr, match, theme, layout, navigation, configure
     <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
       <View style={{ paddingTop: 3 }}><Icon name="GitPullRequest" size={17} color={pr.draft ? c.foregroundMuted : c.statusSuccess} /></View>
       <View style={{ flex: 1, minWidth: 0, gap: 5 }}>
-        <Pressable accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number}: ${pr.title}`} onPress={onOpenPR}>
+        <Interactive t={t} accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number}: ${pr.title}`} onPress={onOpenPR}>
           <Text numberOfLines={expanded ? undefined : 2} style={{ color: c.foreground, fontSize: 15, lineHeight: 21, fontWeight: "600" }}>{pr.title}</Text>
-        </Pressable>
+        </Interactive>
         <Text style={t.muted}>{pr.repository} <Text style={{ fontWeight: "600" }}>#{pr.number}</Text> · {pr.author ? `@${pr.author}` : "Deleted account"}</Text>
         <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <Text accessibilityLabel={`Pull request updated ${absoluteTime(pr.updatedAt)}`} style={t.muted}>Updated {relativeTime(pr.updatedAt, now)}</Text>
@@ -83,12 +83,12 @@ export function PullRequestRow({ pr, match, theme, layout, navigation, configure
       <ActionButton title={label} size="sm" primary t={t}
         icon={action.kind === "view-review" || action.kind === "open-pr" ? "ExternalLink" : action.kind === "open-agent" ? "ArrowUpRight" : "Bot"}
         disabled={action.kind === "starting" || action.kind === "checking" || (action.kind === "configure" && !onOpenReviewer)} onPress={primary} />
-      <Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? "Hide" : "Show"} details for ${pr.repository} #${pr.number}`}
+      <Interactive t={t} accessibilityRole="button" accessibilityLabel={`${expanded ? "Hide" : "Show"} details for ${pr.repository} #${pr.number}`}
         accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)}
-        style={({ pressed }) => ({ minHeight: 32, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 8, backgroundColor: pressed ? c.surface2 : "transparent" })}>
+        style={({ pressed }) => ({ minHeight: t.touchTarget, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 8, backgroundColor: pressed ? c.surface2 : "transparent" })}>
         <Text style={t.muted}>{expanded ? "Hide details" : "Details"}{linked.agents.length > 1 ? ` · ${linked.agents.length} runs` : ""}</Text>
         <Icon name={expanded ? "ChevronUp" : "ChevronDown"} size={13} color={c.foregroundMuted} />
-      </Pressable>
+      </Interactive>
     </View>
     {state?.error && <Text accessibilityRole="alert" style={{ ...t.muted, color: c.statusDanger }}>{state.error}</Text>}
     {linkError && <Text accessibilityRole="alert" style={{ ...t.muted, color: c.statusDanger }}>{linkError}</Text>}

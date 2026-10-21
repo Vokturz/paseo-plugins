@@ -1,24 +1,27 @@
 import type { PluginSurfaceProps, SettingsState } from "@getpaseo/plugin/client";
 import { useState, type ReactNode } from "react";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import { tokensFor } from "./design";
+import { Interactive } from "./ui";
 import { filterSummary, filtersSchema, timeWindowOptions, type Filters } from "../shared/filters";
 import { ChoiceGrid, FilterChoice } from "./filter-choice";
 import { OwnerPicker } from "./owner-picker";
 
-type Props = { theme: PluginSurfaceProps["theme"]; settings: SettingsState<typeof filtersSchema>; leading?: ReactNode };
+type Props = Pick<PluginSurfaceProps, "theme" | "layout"> & { settings: SettingsState<typeof filtersSchema>; leading?: ReactNode };
 type Draft = Filters & { revision: string };
 
-export function FiltersPanel({ theme, settings, leading }: Props) {
+export function FiltersPanel({ theme, layout, settings, leading }: Props) {
   const c = theme.colors;
+  const t = tokensFor(theme, layout);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const button = (label: string, action: () => void, disabled = false, selected = false) => <Pressable accessibilityRole="button" accessibilityLabel={label}
+  const button = (label: string, action: () => void, disabled = false, selected = false) => <Interactive t={t} accessibilityRole="button" accessibilityLabel={label}
     accessibilityState={{ disabled, selected }} disabled={disabled} onPress={action}
-    style={({ pressed }) => ({ alignSelf: "flex-start", minHeight: 38, justifyContent: "center", paddingHorizontal: 12, borderRadius: 9, borderWidth: 1,
+    style={({ pressed }) => ({ alignSelf: "flex-start", minHeight: Math.max(38, t.touchTarget), justifyContent: "center", paddingHorizontal: 12, borderRadius: 9, borderWidth: 1,
       borderColor: selected ? c.accent : c.border, backgroundColor: selected || pressed ? c.surface2 : c.surface1, opacity: disabled ? 0.45 : 1 })}>
     <Text style={{ color: selected ? c.accent : c.foreground, fontSize: 13, fontWeight: "600" }}>{label}</Text>
-  </Pressable>;
+  </Interactive>;
   const save = async () => {
     if (!draft) return;
     setError(null);
@@ -33,15 +36,15 @@ export function FiltersPanel({ theme, settings, leading }: Props) {
   return <View style={{ gap: 10 }}>
     <View style={{ flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
       {leading}
-      {settings.status === "ready" && <Pressable accessibilityRole="button" accessibilityLabel={`${draft ? "Close" : "Edit"} filters: ${filterSummary(settings.values)}`}
+      {settings.status === "ready" && <Interactive t={t} accessibilityRole="button" accessibilityLabel={`${draft ? "Close" : "Edit"} filters: ${filterSummary(settings.values)}`}
         accessibilityState={{ expanded: Boolean(draft), disabled: settings.saving }} disabled={settings.saving}
         onPress={() => { setError(null); setDraft(draft ? null : { ...settings.values, revision: settings.revision }); }}
-        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", minHeight: 40, paddingHorizontal: 11,
+        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", minHeight: Math.max(40, t.touchTarget), paddingHorizontal: 11,
           borderRadius: 10, borderWidth: 1, borderColor: draft ? c.accent : c.border, backgroundColor: pressed || draft ? c.surface2 : c.surface1, opacity: settings.saving ? 0.5 : 1 })}>
         <Icon name="SlidersHorizontal" size={14} color={c.foregroundMuted} />
         <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12, flexShrink: 1 }}>{draft ? "Close filters" : summary}</Text>
         <Icon name={draft ? "ChevronUp" : "ChevronDown"} size={13} color={c.foregroundMuted} />
-      </Pressable>}
+      </Interactive>}
       {settings.status === "loading" && <Text style={{ color: c.foregroundMuted, fontSize: 12, paddingVertical: 12 }}>Loading filters…</Text>}
     </View>
     {(draft || settings.status === "error" || settings.status === "invalid" || settings.saveError) && <View style={{ borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, borderRadius: 12, padding: 16, gap: 12 }}>
@@ -56,17 +59,17 @@ export function FiltersPanel({ theme, settings, leading }: Props) {
       </>}
       {draft && <>
         <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>Organizations or users</Text>
-        <OwnerPicker theme={theme} selected={draft.owners} onChange={(owners) => setDraft({ ...draft, owners })} disabled={settings.saving} />
+        <OwnerPicker t={t} selected={draft.owners} onChange={(owners) => setDraft({ ...draft, owners })} disabled={settings.saving} />
         <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>Time window</Text>
         <View accessibilityRole="radiogroup" accessibilityLabel="Date field">
           <ChoiceGrid>
-            <FilterChoice theme={theme} label="Updated" icon="RefreshCw" radio checked={draft.dateField === "updated"} onPress={() => setDraft({ ...draft, dateField: "updated" })} disabled={settings.saving} />
-            <FilterChoice theme={theme} label="Created" icon="Calendar" radio checked={draft.dateField === "created"} onPress={() => setDraft({ ...draft, dateField: "created" })} disabled={settings.saving} />
+            <FilterChoice t={t} label="Updated" icon="RefreshCw" radio checked={draft.dateField === "updated"} onPress={() => setDraft({ ...draft, dateField: "updated" })} disabled={settings.saving} />
+            <FilterChoice t={t} label="Created" icon="Calendar" radio checked={draft.dateField === "created"} onPress={() => setDraft({ ...draft, dateField: "created" })} disabled={settings.saving} />
           </ChoiceGrid>
         </View>
         <View accessibilityRole="radiogroup" accessibilityLabel="Time window">
           <ChoiceGrid>
-            {timeWindowOptions(settings.status === "ready" ? settings.values.days : draft.days).map((option) => <FilterChoice key={option.days ?? "any"} theme={theme} label={option.label}
+            {timeWindowOptions(settings.status === "ready" ? settings.values.days : draft.days).map((option) => <FilterChoice key={option.days ?? "any"} t={t} label={option.label}
               radio checked={draft.days === option.days} onPress={() => setDraft({ ...draft, days: option.days })} disabled={settings.saving} />)}
           </ChoiceGrid>
         </View>
