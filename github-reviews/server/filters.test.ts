@@ -93,6 +93,7 @@ test("list handler reads the locally persisted settings on every call and refuse
     return { pullRequests: [] } as unknown as ReviewPage;
   });
   contribute({
+    on() { return () => {}; },
     registerSettings() { return { read: async () => saved }; },
     handle(contract: { name: string }, callback: typeof handler) { if (contract.name === "github-reviews.list") handler = callback; },
   } as unknown as PluginServerContext);

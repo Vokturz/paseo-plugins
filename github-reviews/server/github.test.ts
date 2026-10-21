@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
-import { defaultReviewPromptRpc, launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
+import { defaultReviewPromptRpc, reviewOutcomesRpc, launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
 import { commandError, GitHubReviews, type RunGh } from "./github";
 import { filterSettings, filtersSchema } from "../shared/filters";
 import { reviewerSettings } from "../shared/reviewer";
@@ -187,10 +187,11 @@ test("registers the list and owner RPCs with the Paseo server", () => {
   const contracts: unknown[] = [];
   const settings: unknown[] = [];
   const cleanup = contribute({
+    on() { return () => {}; },
     registerSettings(definition: unknown) { settings.push(definition); return { read: async () => ({ status: "ready", values: filtersSchema.parse({}) }) }; },
     handle(contract: unknown) { contracts.push(contract); },
   } as unknown as PluginServerContext);
-  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc, defaultReviewPromptRpc]);
+  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc, defaultReviewPromptRpc, reviewOutcomesRpc]);
   assert.deepEqual(settings, [filterSettings, reviewerSettings]);
   cleanup();
 });
@@ -231,4 +232,42 @@ test("owner discovery advances full pages and rejects invalid inputs or response
   const before = calls.length;
   await assert.rejects(service.owners({ page: 0 }));
   assert.equal(calls.length, before);
+});
+
+test("batches current PR heads and preserves partial freshness failures", async () => {
+  const bodies: { query: string }[] = [];
+  const service = new GitHubReviews(async (args, input) => {
+    assert.equal(args[4], "POST"); assert.equal(args[5], "graphql");
+    assert.deepEqual(args.slice(-2), ["--input", "-"]);
+    const body = JSON.parse(input!); bodies.push(body);
+    const count = [...body.query.matchAll(/p\d+: repository/g)].length;
+    return JSON.stringify({ data: Object.fromEntries(Array.from({ length: count }, (_, index) => [`p${index}`, index === 1 ? null : { pullRequest: { headRefOid: "a".repeat(40) } }])) });
+  });
+  const targets = Array.from({ length: 27 }, (_, index) => ({ repository: "acme/web", number: index + 1 }));
+  const result = await service.heads([...targets, targets[0]]);
+  assert.equal(bodies.length, 2);
+  assert.equal(Object.keys(result.heads).length, 27);
+  assert.equal(result.heads["acme/web#1"], "a".repeat(40));
+  assert.equal(result.heads["acme/web#2"], null);
+  assert.match(result.warning!, /unavailable/);
+  const unavailable = await new GitHubReviews(async () => { throw new Error("No access"); }).heads([targets[0]]);
+  assert.equal(unavailable.heads["acme/web#1"], null);
+  assert.ok(unavailable.warning);
+});
+
+test("paginates review history completely and passes publication JSON on stdin", async () => {
+  const calls: { args: string[]; input?: string }[] = [];
+  const review = { id: 1, html_url: "https://github.com/acme/web/pull/42#pullrequestreview-1", state: "COMMENTED", body: "Review", commit_id: "a".repeat(40), user: { id: 7, login: "reviewer" } };
+  const service = new GitHubReviews(async (args, input) => {
+    calls.push({ args, input });
+    if (input) return JSON.stringify(review);
+    return JSON.stringify(args.includes("page=1") ? Array.from({ length: 100 }, (_, index) => ({ ...review, id: index + 1 })) : [review]);
+  });
+  assert.equal((await service.reviews("acme/web", 42)).length, 101);
+  assert.ok(calls[1].args.includes("page=2"));
+  const body = { commit_id: review.commit_id, event: "COMMENT", body: "Literal `$(private)` text\nsecond line" };
+  await service.postReview("acme/web", 42, body);
+  assert.deepEqual(JSON.parse(calls[2].input!), body);
+  assert.equal(calls[2].args[4], "POST");
+  assert.ok(!calls[2].args.some((arg) => arg.includes("private")));
 });

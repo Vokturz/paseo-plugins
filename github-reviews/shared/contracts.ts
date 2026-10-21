@@ -3,6 +3,7 @@ import { z } from "zod";
 import { filtersSchema, ownerOptionSchema } from "./filters";
 import { projectMatchesSchema } from "./projects";
 import { reviewPromptTextSchema } from "./reviewer";
+import { reviewOutcomeSchema } from "./publication";
 
 export const PAGE_SIZE = 50;
 export const MAX_PAGE = 20; // GitHub search exposes at most 1,000 matches.
@@ -41,6 +42,8 @@ export const reviewPageSchema = z.object({
   incomplete: z.boolean(),
   capped: z.boolean(),
   fetchedAt: z.string(),
+  headsByPr: z.record(z.string(), z.string().nullable()).default({}),
+  headWarning: z.string().nullable().default(null),
 }).extend(projectMatchesSchema.shape);
 export type ReviewPage = z.infer<typeof reviewPageSchema>;
 
@@ -71,3 +74,4 @@ export const launchReviewResultSchema = z.object({ agentId: z.string().min(1), w
 export type LaunchReviewResult = z.infer<typeof launchReviewResultSchema>;
 export const launchReviewRpc = defineRpc({ name: "github-reviews.launch", input: launchReviewInputSchema, output: launchReviewResultSchema });
 export const defaultReviewPromptRpc = defineRpc({ name: "github-reviews.default-prompt", input: z.object({}), output: z.object({ prompt: reviewPromptTextSchema }) });
+export const reviewOutcomesRpc = defineRpc({ name: "github-reviews.outcomes", input: reviewTargetSchema, output: z.object({ runs: z.array(reviewOutcomeSchema) }) });

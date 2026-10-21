@@ -8,6 +8,7 @@ import { loadReviewerModels, reviewerOptionsIssue, selectedReviewerModel } from 
 import type { GitHubReviews, ReviewDetail } from "./github";
 import { readGitRepositories, type ReadRepositories } from "./projects";
 import { readDefaultReviewPrompt } from "./review-prompt";
+import type { LaunchPublication } from "./review-runtime";
 
 type Start = SchemaInput<typeof launchReviewInputSchema>;
 type ValidatedStart = SchemaOutput<typeof launchReviewInputSchema>;
@@ -28,7 +29,7 @@ export const prepareReview: Prepare = async (path, detail) => {
   }
 };
 
-export function reviewPrompt(detail: ReviewDetail, instructions: string, extraInstructions = ""): string {
+export function reviewPrompt(detail: ReviewDetail, instructions: string, extraInstructions = "", publicationInstructions = ""): string {
   return [
     instructions,
     ...(extraInstructions.trim() ? ["Additional instructions and context for this review:", extraInstructions.trim()] : []),
@@ -36,6 +37,7 @@ export function reviewPrompt(detail: ReviewDetail, instructions: string, extraIn
     JSON.stringify(detail, null, 2),
     `This isolated worktree starts at PR head ${detail.headSha}. The base commit ${detail.baseSha} is available locally. Review the PR changes with git diff ${detail.baseSha}...${detail.headSha}, reading surrounding code as needed.`,
     `Use gh pr view ${detail.number} --repo ${detail.repository} for additional context. Follow the review instructions above for GitHub publication, and report the review permalink or any publication blocker in this conversation.`,
+    ...(publicationInstructions ? [publicationInstructions] : []),
   ].join("\n\n");
 }
 
@@ -48,6 +50,7 @@ export class ReviewLauncher {
     private readonly read: ReadRepositories = readGitRepositories,
     private readonly prepare: Prepare = prepareReview,
     private readonly defaultPrompt: () => Promise<string> = readDefaultReviewPrompt,
+    private readonly publication?: LaunchPublication,
   ) {}
 
   start(raw: Start, paseo: PaseoApi, saved: ReviewerConfig): Promise<LaunchReviewResult> {
@@ -84,20 +87,28 @@ export class ReviewLauncher {
     if (!project) throw new Error("This local Git project is no longer available. Refresh and select another project.");
     if (!(await this.read(project.projectRootPath)).includes(input.repository)) throw new Error("This project's Git remotes no longer match the PR repository. Refresh and select a matching project.");
     const detail = await this.github.detail(input.repository, input.number);
-    await this.prepare(project.projectRootPath, detail);
-    const title = `Review ${input.repository} #${input.number}`.slice(0, 100);
-    onCreate();
-    const workspace = await paseo.workspaces.create({
-      title, requestId: `${input.requestId}-workspace`,
-      source: { kind: "worktree", projectId: project.projectId, cwd: project.projectRootPath, action: "branch-off",
-        baseBranch: detail.headSha, branchName: `review/pr-${input.number}-${input.requestId}` },
-    }).catch(() => { throw new Error("Workspace creation could not be confirmed. Check this project's workspaces before starting another review."); });
-    const agent = await workspace.agents.create({
-      config: { provider: `${config.provider}/${config.model}`, ...(config.modeId ? { modeId: config.modeId } : {}), ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}) },
-      title, prompt: reviewPrompt(detail, prompt, input.instructions),
-      requestId: input.requestId, idempotencyKey: input.requestId, clientMessageId: input.requestId,
-      labels: { "github.repository": input.repository, "github.prNumber": String(input.number), "github.url": detail.url, "github.headSha": detail.headSha },
-    }).catch(() => { throw new Error(`Agent creation could not be confirmed. Check workspace ${workspace.id} before starting another review.`); });
-    return { workspaceId: workspace.id, agentId: agent.id };
+    const session = await this.publication?.prepare(input.requestId, detail);
+    try {
+      await this.prepare(project.projectRootPath, detail);
+      const title = `Review ${input.repository} #${input.number}`.slice(0, 100);
+      onCreate();
+      const workspace = await paseo.workspaces.create({
+        title, requestId: `${input.requestId}-workspace`,
+        source: { kind: "worktree", projectId: project.projectId, cwd: project.projectRootPath, action: "branch-off",
+          baseBranch: detail.headSha, branchName: `review/pr-${input.number}-${input.requestId}` },
+      }).catch(() => { throw new Error("Workspace creation could not be confirmed. Check this project's workspaces before starting another review."); });
+      const agent = await workspace.agents.create({
+        config: { provider: `${config.provider}/${config.model}`, ...(config.modeId ? { modeId: config.modeId } : {}), ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}), ...session?.config },
+        agentId: input.requestId,
+        title, prompt: reviewPrompt(detail, prompt, input.instructions, session?.instructions),
+        requestId: input.requestId, idempotencyKey: input.requestId, clientMessageId: input.requestId,
+        labels: { "github.repository": input.repository, "github.prNumber": String(input.number), "github.url": detail.url, "github.headSha": detail.headSha, "github.baseSha": detail.baseSha, "github.runId": input.requestId },
+      }).catch(() => { throw new Error(`Agent creation could not be confirmed. Check workspace ${workspace.id} before starting another review.`); });
+      await this.publication?.created(input.requestId, agent.id, workspace.id);
+      return { workspaceId: workspace.id, agentId: agent.id };
+    } catch (error) {
+      await this.publication?.blocked(input.requestId, error instanceof Error ? error.message : "Review launch failed.").catch(() => {});
+      throw error;
+    }
   }
 }

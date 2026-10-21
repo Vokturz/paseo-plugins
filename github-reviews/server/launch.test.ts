@@ -242,6 +242,7 @@ test("launch RPC reads host-saved reviewer settings on every call and refuses in
   const received: unknown[] = [];
   t.mock.method(ReviewLauncher.prototype, "start", async (_input: Parameters<ReviewLauncher["start"]>[0], _paseo: PaseoApi, values: Parameters<ReviewLauncher["start"]>[2]) => { received.push(values); return { workspaceId: "w", agentId: "a" }; });
   contribute({
+    on() { return () => {}; },
     registerSettings(definition: { id: string }) { return { read: async () => definition.id === reviewerSettings.id ? saved : {} }; },
     handle(contract: { name: string }, callback: unknown) { if (contract.name === launchReviewRpc.name) handler = callback; },
   } as unknown as PluginServerContext);
@@ -252,4 +253,24 @@ test("launch RPC reads host-saved reviewer settings on every call and refuses in
   saved = { status: "invalid" };
   await assert.rejects(handler(input, { paseo: {} }), /saved reviewer setup is invalid/);
   assert.equal(received.length, 2);
+});
+
+test("launch passes the guarded publication tools and durable run identity to the agent", async () => {
+  const f = fixture();
+  const events: unknown[] = [];
+  const publication = {
+    prepare: async (id: string, snapshot: ReviewDetail) => { events.push(["prepare", id, snapshot.headSha]); return { instructions: "Use the guarded submit_review tool.", config: { mcpServers: { github_review: { type: "stdio" as const, command: "node", args: ["review-tool"] } }, toolPolicy: { preapproved: [{ kind: "mcp" as const, server: "github_review", tool: "submit_review" }] } } }; },
+    created: async (...args: string[]) => { events.push(["created", ...args]); },
+    blocked: async () => { throw new Error("Unexpected launch blocker"); },
+  };
+  const launcher = new ReviewLauncher({ detail: async () => detail }, async () => ["acme/web"], async () => {}, undefined, publication);
+  await launcher.start(input, f.paseo, config);
+  assert.equal(f.agents[0].agentId, input.requestId);
+  assert.equal(f.agents[0].labels?.["github.runId"], input.requestId);
+  assert.equal(f.agents[0].labels?.["github.baseSha"], detail.baseSha);
+  const server = f.agents[0].config.mcpServers!.github_review;
+  assert.equal(server.type, "stdio");
+  if (server.type === "stdio") assert.equal(server.command, "node");
+  assert.ok(f.agents[0].prompt!.endsWith("Use the guarded submit_review tool."));
+  assert.deepEqual(events, [["prepare", input.requestId, detail.headSha], ["created", input.requestId, "agent", "workspace"]]);
 });

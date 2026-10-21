@@ -9,6 +9,7 @@ import { FiltersPanel } from "./filters";
 import { ProjectAvailability } from "./project-availability";
 import { reviewerSettings } from "../shared/reviewer";
 import { ReviewAction, useReviewLaunch } from "./review-action";
+import { prKey } from "../shared/publication";
 
 function message(error: unknown) { return error instanceof Error ? error.message : "Could not load pull requests. Try refreshing again."; }
 function date(value: string) {
@@ -152,6 +153,7 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
       {result?.incomplete && <Text accessibilityRole="alert" style={{ color: c.statusWarning, fontSize: 13 }}>GitHub returned partial search results. Refresh to try again.</Text>}
       {result?.capped && <Text style={{ color: c.statusWarning, fontSize: 13 }}>GitHub search exposes only the first 1,000 matches. The total includes additional pull requests.</Text>}
       {result?.projectWarning && <Text accessibilityRole="alert" style={{ color: c.statusWarning, fontSize: 13 }}>{result.projectWarning}</Text>}
+      {result?.headWarning && <Text accessibilityRole="alert" style={{ color: c.statusWarning, fontSize: 13 }}>{result.headWarning}</Text>}
 
       {result && result.pullRequests.length === 0 && <View style={{ borderRadius: 16, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, padding: 36, alignItems: "center", gap: 12 }}>
         <Icon name={result.incomplete ? "Search" : "CircleCheck"} size={32} color={c.accent} />
@@ -176,6 +178,7 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
               {pr.labels.length > 3 && <Text style={{ color: c.foregroundMuted, fontSize: 11, paddingVertical: 3 }}>+{pr.labels.length - 3}</Text>}
             </View>}
             <ReviewAction pr={pr} match={result.projectsByRepository[pr.repository.toLowerCase()]} theme={theme} layout={layout}
+              currentHead={result.headsByPr[prKey(pr.repository, pr.number)]}
               navigation={navigation} configured={configured} onOpenReviewer={onOpenReviewer} launcher={launcher} />
           </View>
           <Pressable accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number} on GitHub`} onPress={() => void openPR(pr.url)} style={{ padding: 5 }}>

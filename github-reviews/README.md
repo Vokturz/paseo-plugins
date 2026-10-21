@@ -184,8 +184,50 @@ Starting a review with the default prompt authorizes the agent to write and
 publish a GitHub `COMMENT` review containing confirmed findings, then return the
 review link or a publication blocker in its conversation. The prompt excludes
 approvals, request-changes reviews, merges, code edits, and unrequested thread
-resolution. Custom prompts control their own review and publication instructions.
+resolution. Custom prompts control review content and whether to publish; the
+launcher always appends the required route and constraints for any publication.
 There is no automatic event listener or background launcher yet.
+
+## Review outcomes and publication
+
+Linked agents show **Reviewing**, **Publishing…**, **Published**, **Blocked**, or
+**No new review**. **Published** requires a verified GitHub submission and exposes
+**View GitHub review**. Idle agents without a recorded outcome show **Outcome
+unknown**; finishing a turn never counts as publication. An unfinished turn that
+ends without a verified submission records a blocker. The native agent status
+remains visible separately.
+
+The row records the reviewed commit. **New commits since review** appears when
+the PR's current head differs, with **Run again** available to inspect the new
+snapshot. Freshness is checked whenever the PR list refreshes. Failed head
+checks display a warning rather than assuming a review is current. Publication
+outcomes refresh every ten seconds while the view is active and survive reloads.
+Older agents retain their links; publication is not inferred from their text.
+
+Every new reviewer receives a `github_review` MCP server with `submit_review`,
+`get_review_status`, and `report_review_blocker`. A guarded CLI fallback uses the
+same handler if the provider cannot use MCP. The handler checks the effective
+GitHub user ID/login, open/non-draft state, exact head/base commits, pending
+reviews, fully paginated review history, and diff anchors before submitting a
+single `COMMENT` review at the recorded head. It checks account/snapshot/history
+again immediately before submission, then verifies the returned review and inline
+comments before recording its link. A changed snapshot requires a fresh run.
+
+Publication is serialized per PR across this host's reviewer processes. Hidden
+GitHub markers and stable finding keys prevent repeated submissions and repeated
+inline findings. The agent must retain the same key for the same underlying
+defect and compare other authors' reports by meaning; wording alone cannot prove
+that two findings describe the same bug. All-fixed acknowledgments must cover all
+outstanding findings owned by the reviewer. Threads are left unchanged.
+
+Prepared payloads and receipts are stored privately under
+`$PASEO_HOME/github-reviews` (default `~/.paseo/github-reviews`), outside project
+checkouts. They include review text, account identity, commit IDs, and links;
+public status RPCs omit the prepared payloads. Files use owner-only permissions.
+An uncertain submission blocks another write until GitHub confirms its outcome;
+retry the same payload or use `get_review_status` to reconcile it. The plugin
+never edits or deletes an existing pending review. These checks govern the
+provided publication tools; they do not sandbox an agent's shell access.
 
 ## Local filters
 
@@ -231,9 +273,9 @@ search results and GitHub's 1,000-result search cap are explicitly shown.
 
 The plugin reads GitHub data and can create local reviewer agents. Agents using
 the default prompt may publish reviews; refreshing the list remains read-only.
-Each refresh runs two
-bounded, read-only `gh api` commands on the host: resolve the current user, then
-search the selected PR list. Editing owner filters also reads the current user
+Each refresh resolves the current user, searches the selected PR list, and
+reads current PR head commits in GraphQL batches of up to 25. All are bounded,
+read-only `gh api` commands on the host. Editing owner filters also reads the current user
 and accessible repository owners in pages of 100 repositories. Raw subprocess
 errors and private repository details are not sent to clients.
 
@@ -261,3 +303,10 @@ Default prompt tests cover live Markdown reads, invalid assets, legacy migration
 custom prompt preservation, and publication instructions in the launched prompt.
 Linked-agent tests cover label-based restoration, pagination, multiple runs,
 archive/removal updates, stale-response races, retries, and subscription cleanup.
+
+Publication tests cover account and snapshot changes, pending reviews, last-minute
+history changes, diff anchors, concurrent publishers, duplicate findings, lost
+responses and restart recovery, fix acknowledgments, private receipts, lifecycle
+outcomes, and freshness comparisons. A separate MCP/CLI process test uses a fake
+GitHub executable and verifies JSON submission and idempotent retry without
+writing to GitHub.

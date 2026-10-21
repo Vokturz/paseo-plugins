@@ -1,6 +1,6 @@
 import type { PaseoAgent, PaseoAgentUpdate, PaseoApi } from "@getpaseo/client";
 
-export type ReviewAgent = Pick<PaseoAgent, "id" | "title" | "status" | "updatedAt">;
+export type ReviewAgent = Pick<PaseoAgent, "id" | "title" | "status" | "updatedAt"> & { runId: string | null; headSha: string | null };
 export type ReviewAgentsState = { agents: ReviewAgent[]; loading: boolean; error: string | null };
 type Source = Pick<PaseoApi["agents"], "list" | "subscribe">;
 
@@ -20,7 +20,8 @@ export function watchReviewAgents(source: Source, repository: string, number: nu
   const apply = (target: Map<string, ReviewAgent>, update: PaseoAgentUpdate) => {
     if (update.kind === "remove") target.delete(update.agentId);
     else if (!matches(update.agent)) target.delete(update.agent.id);
-    else target.set(update.agent.id, { id: update.agent.id, title: update.agent.title, status: update.agent.status, updatedAt: update.agent.updatedAt });
+    else target.set(update.agent.id, { id: update.agent.id, title: update.agent.title, status: update.agent.status, updatedAt: update.agent.updatedAt,
+      runId: update.agent.labels?.["github.runId"] ?? null, headSha: update.agent.labels?.["github.headSha"] ?? null });
   };
   const receive = (update: PaseoAgentUpdate) => {
     if (disposed) return;
