@@ -10,10 +10,11 @@ const runId = z.uuid().parse(arg("--run"));
 const home = arg("--home");
 if (!home) throw new Error("The review tool requires its Paseo home.");
 const store = new ReviewStore(home);
+const reviewOnly = (await store.read(runId))?.reviewOnly === true;
 const publisher = new ReviewPublisher(new GitHubReviews(), store);
 const tools = [
   { name: "get_review_status", description: "Read this review run's durable publication outcome.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
-  { name: "submit_review", description: "Publish this run's completed review through account, snapshot, duplicate and diff checks. At most one COMMENT review per run. Retry only the same content after uncertain submission.", inputSchema: z.toJSONSchema(reviewSubmissionSchema, { io: "input" }) },
+  { name: "submit_review", description: reviewOnly ? "Save this review-only run's completed findings locally. Does not publish to GitHub." : "Publish this run's completed review through account, snapshot, duplicate and diff checks. At most one COMMENT review per run. Retry only the same content after uncertain submission.", inputSchema: z.toJSONSchema(reviewSubmissionSchema, { io: "input" }) },
   { name: "report_review_blocker", description: "Record why this review cannot be completed or published.", inputSchema: { type: "object", properties: { reason: { type: "string", minLength: 1, maxLength: 2_000 } }, required: ["reason"], additionalProperties: false } },
 ];
 async function tool(name: string, input: unknown) {
@@ -23,7 +24,7 @@ async function tool(name: string, input: unknown) {
   if (name === "get_review_status") return run.uncertain && run.submission ? publisher.submit(runId, run.submission) : reviewOutcomeSchema.parse(run);
   if (name === "report_review_blocker") {
     const { reason } = z.object({ reason: z.string().trim().min(1).max(2_000) }).strict().parse(input);
-    return reviewOutcomeSchema.parse(await store.update(runId, (current) => current.status === "published" || current.uncertain || current.status === "publishing" ? current : { ...current, status: "blocked", reason }));
+    return reviewOutcomeSchema.parse(await store.update(runId, (current) => ["published", "completed", "publishing"].includes(current.status) || current.uncertain ? current : { ...current, status: "blocked", reason }));
   }
   throw new Error("Unknown review tool.");
 }

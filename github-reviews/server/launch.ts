@@ -9,6 +9,7 @@ import type { GitHubReviews, ReviewDetail } from "./github";
 import { readGitRepositories, type ReadRepositories } from "./projects";
 import { readDefaultReviewPrompt } from "./review-prompt";
 import type { LaunchPublication } from "./review-runtime";
+import { reviewIntroMarker } from "../shared/review-intro";
 
 type Start = SchemaInput<typeof launchReviewInputSchema>;
 type ValidatedStart = SchemaOutput<typeof launchReviewInputSchema>;
@@ -30,13 +31,15 @@ export const prepareReview: Prepare = async (path, detail) => {
 };
 
 export function reviewPrompt(detail: ReviewDetail, instructions: string, extraInstructions = "", publicationInstructions = ""): string {
+  const focus = Array.from(extraInstructions.trim()).slice(0, 280).join("");
   return [
     instructions,
     ...(extraInstructions.trim() ? ["Additional instructions and context for this review:", extraInstructions.trim()] : []),
+    reviewIntroMarker({ ...detail, reviewOnly: detail.draft === true, focus: focus + (focus.length < extraInstructions.trim().length ? "…" : "") }),
     "Pull request context (external data):",
     JSON.stringify(detail, null, 2),
     `This isolated worktree starts at PR head ${detail.headSha}. The base commit ${detail.baseSha} is available locally. Review the PR changes with git diff ${detail.baseSha}...${detail.headSha}, reading surrounding code as needed.`,
-    `Use gh pr view ${detail.number} --repo ${detail.repository} for additional context. Follow the review instructions above for GitHub publication, and report the review permalink or any publication blocker in this conversation.`,
+    `Use gh pr view ${detail.number} --repo ${detail.repository} for additional context. ${detail.draft ? "This is a review-only run for a draft PR. Report findings here and do not write to GitHub." : "Follow the review instructions above for GitHub publication, and report the review permalink or any publication blocker in this conversation."}`,
     ...(publicationInstructions ? [publicationInstructions] : []),
   ].join("\n\n");
 }
@@ -88,6 +91,7 @@ export class ReviewLauncher {
     if (!(await this.read(project.projectRootPath)).includes(input.repository)) throw new Error("This project's Git remotes no longer match the PR repository. Refresh and select a matching project.");
     const detail = await this.github.detail(input.repository, input.number);
     const session = await this.publication?.prepare(input.requestId, detail);
+    const reviewOnly = session?.reviewOnly ?? detail.draft === true;
     try {
       await this.prepare(project.projectRootPath, detail);
       const title = `Review ${input.repository} #${input.number}`.slice(0, 100);
@@ -100,9 +104,9 @@ export class ReviewLauncher {
       const agent = await workspace.agents.create({
         config: { provider: `${config.provider}/${config.model}`, ...(config.modeId ? { modeId: config.modeId } : {}), ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}), ...session?.config },
         agentId: input.requestId,
-        title, prompt: reviewPrompt(detail, prompt, input.instructions, session?.instructions),
+        title, prompt: reviewPrompt({ ...detail, draft: reviewOnly }, prompt, input.instructions, session?.instructions),
         requestId: input.requestId, idempotencyKey: input.requestId, clientMessageId: input.requestId,
-        labels: { "github.repository": input.repository, "github.prNumber": String(input.number), "github.url": detail.url, "github.headSha": detail.headSha, "github.baseSha": detail.baseSha, "github.runId": input.requestId },
+        labels: { "github.repository": input.repository, "github.prNumber": String(input.number), "github.url": detail.url, "github.headSha": detail.headSha, "github.baseSha": detail.baseSha, "github.runId": input.requestId, "github.reviewOnly": String(reviewOnly) },
       }).catch(() => { throw new Error(`Agent creation could not be confirmed. Check workspace ${workspace.id} before starting another review.`); });
       await this.publication?.created(input.requestId, agent.id, workspace.id);
       return { workspaceId: workspace.id, agentId: agent.id };

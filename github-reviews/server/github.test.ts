@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "../index.server";
-import { defaultReviewPromptRpc, reviewOutcomesRpc, launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
+import { batchReviewOutcomesRpc, defaultReviewPromptRpc, reviewOutcomesRpc, launchReviewRpc, listInputSchema, listOwnersRpc, listReviewsRpc, MAX_PAGE, PAGE_SIZE, type PullRequestScope } from "../shared/contracts";
 import { commandError, GitHubReviews, type RunGh } from "./github";
 import { filterSettings, filtersSchema } from "../shared/filters";
 import { reviewerSettings } from "../shared/reviewer";
+import { ReviewStore } from "./review-store";
 
 function pullRequest(number = 42) {
   return {
@@ -137,7 +138,7 @@ test("rejects invalid pages before running any command", async () => {
     assert.equal(calls.length, 0);
     assert.equal(listInputSchema.safeParse({ page }).success, false);
   }
-  assert.deepEqual(listInputSchema.parse({}), { page: 1, scope: "review-requested" });
+  assert.deepEqual(listInputSchema.parse({}), { page: 1, scope: "review-requested", reviewFilter: "all" });
 });
 
 test("rejects unsupported scopes before running a command", async () => {
@@ -191,9 +192,29 @@ test("registers the list and owner RPCs with the Paseo server", () => {
     registerSettings(definition: unknown) { settings.push(definition); return { read: async () => ({ status: "ready", values: filtersSchema.parse({}) }) }; },
     handle(contract: unknown) { contracts.push(contract); },
   } as unknown as PluginServerContext);
-  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc, defaultReviewPromptRpc, reviewOutcomesRpc]);
+  assert.deepEqual(contracts, [launchReviewRpc, listReviewsRpc, listOwnersRpc, defaultReviewPromptRpc, reviewOutcomesRpc, batchReviewOutcomesRpc]);
   assert.deepEqual(settings, [filterSettings, reviewerSettings]);
   cleanup();
+});
+
+test("batch outcomes deduplicate targets and isolate unreadable histories", async (t) => {
+  const calls: string[] = [];
+  let handler: ((input: { targets: { repository: string; number: number }[] }) => Promise<unknown>) | undefined;
+  t.mock.method(ReviewStore.prototype, "outcomes", async (repository: string, number: number) => {
+    calls.push(`${repository}#${number}`);
+    if (number === 2) throw new Error("Unreadable history");
+    return [];
+  });
+  contribute({
+    on() { return () => {}; }, registerSettings() { return {}; },
+    handle(contract: { name: string }, callback: typeof handler) { if (contract.name === batchReviewOutcomesRpc.name) handler = callback; },
+  } as unknown as PluginServerContext);
+  assert.ok(handler);
+  const input = batchReviewOutcomesRpc.input.parse({ targets: [{ repository: "ACME/WEB", number: 1 }, { repository: "acme/web", number: 1 }, { repository: "acme/web", number: 2 }] });
+  assert.deepEqual(await handler(input), { runsByPr: { "acme/web#1": [] }, failedTargets: ["acme/web#2"] });
+  assert.deepEqual(calls, ["acme/web#1", "acme/web#2"]);
+  assert.equal(batchReviewOutcomesRpc.input.safeParse({ targets: [] }).success, false);
+  assert.equal(batchReviewOutcomesRpc.input.safeParse({ targets: Array.from({ length: 51 }, () => input.targets[0]) }).success, false);
 });
 
 test("discovers users and organizations from accessible repositories, with pagination and no private repo data", async () => {

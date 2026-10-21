@@ -27,7 +27,8 @@ export type ReviewFinding = z.infer<typeof reviewFindingSchema>;
 export const reviewOutcomeSchema = z.object({
   id: z.uuid(), agentId: z.string(), repository: z.string(), number: z.number().int().positive(),
   headSha: shaSchema, baseSha: shaSchema,
-  status: z.enum(["reviewing", "publishing", "published", "blocked", "skipped"]),
+  status: z.enum(["reviewing", "publishing", "published", "blocked", "skipped", "completed"]),
+  reviewOnly: z.boolean().default(false),
   reason: z.string().nullable(), reviewUrl: z.string().nullable(), updatedAt: z.string(),
 });
 export type ReviewOutcome = z.infer<typeof reviewOutcomeSchema>;

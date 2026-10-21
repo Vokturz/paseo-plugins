@@ -60,6 +60,20 @@ test("provider defaults are omitted rather than replaced with another mode or re
   assert.deepEqual(f.agents[0].config, { provider: "claude/vendor/model" });
 });
 
+test("draft launches use the current server snapshot and explain review-only mode in the agent prompt", async () => {
+  const f = fixture();
+  const draft = { ...detail, draft: true };
+  let prepared: ReviewDetail | undefined;
+  const launcher = new ReviewLauncher({ detail: async () => draft }, async () => ["acme/web"], async () => {}, undefined, {
+    prepare: async (_id, snapshot) => { prepared = snapshot; return { instructions: "Mandatory review-only mode: do not publish.", config: {} }; },
+    created: async () => {}, blocked: async () => {},
+  });
+  await launcher.start(input, f.paseo, config);
+  assert.equal(prepared?.draft, true); assert.equal(f.agents[0].labels?.["github.reviewOnly"], "true");
+  assert.match(f.agents[0].prompt!, /review-only run for a draft PR/);
+  assert.ok(f.agents[0].prompt!.endsWith("Mandatory review-only mode: do not publish."));
+});
+
 test("launches with the current Markdown default and permits publication without conflicting instructions", async () => {
   const f = fixture();
   await f.launcher.start({ ...input, instructions: "Focus on session expiry." }, f.paseo, { ...config, prompt: null });

@@ -72,6 +72,12 @@ export class ReviewPublisher {
     if (!initial) throw new Error("This review run is unavailable. Start a new review.");
     const result = await this.store.lock(`publish:${prKey(initial.repository, initial.number)}`, async () => {
       let run = (await this.store.read(id))!;
+      if (run.reviewOnly) {
+        if (run.digest && run.digest !== hash && run.status === "completed") throw new Error("This review-only run already saved different content. Start a new review for changed findings.");
+        if (run.status === "completed") return run;
+        return this.store.update(id, (current) => ({ ...current, status: "completed", submission, digest: hash,
+          reason: "Review completed locally. This run started on a draft PR and does not publish to GitHub.", reviewUrl: null }));
+      }
       if (run.digest && run.digest !== hash && (run.uncertain || run.status === "published")) throw new Error("This run already submitted different content. Start a new review for changed findings.");
       if (run.status === "published") return run;
       try {

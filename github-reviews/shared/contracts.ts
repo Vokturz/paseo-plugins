@@ -26,14 +26,18 @@ export type PullRequest = z.infer<typeof pullRequestSchema>;
 // Retain the RPC scope ID for existing clients; this list includes past reviews.
 export const pullRequestScopeSchema = z.enum(["review-requested", "created"]);
 export type PullRequestScope = z.infer<typeof pullRequestScopeSchema>;
+export const reviewFilterSchema = z.enum(["all", "awaiting", "reviewed", "outdated"]);
+export type ReviewFilter = z.infer<typeof reviewFilterSchema>;
 
 export const listInputSchema = z.object({
   page: z.number().int().min(1).max(MAX_PAGE).default(1),
   scope: pullRequestScopeSchema.default("review-requested"),
+  reviewFilter: reviewFilterSchema.default("all"),
 });
 export const reviewPageSchema = z.object({
   login: z.string(),
   scope: pullRequestScopeSchema,
+  reviewFilter: reviewFilterSchema.default("all"),
   filters: filtersSchema,
   pullRequests: z.array(pullRequestSchema),
   totalCount: z.number().int().nonnegative(),
@@ -75,3 +79,8 @@ export type LaunchReviewResult = z.infer<typeof launchReviewResultSchema>;
 export const launchReviewRpc = defineRpc({ name: "github-reviews.launch", input: launchReviewInputSchema, output: launchReviewResultSchema });
 export const defaultReviewPromptRpc = defineRpc({ name: "github-reviews.default-prompt", input: z.object({}), output: z.object({ prompt: reviewPromptTextSchema }) });
 export const reviewOutcomesRpc = defineRpc({ name: "github-reviews.outcomes", input: reviewTargetSchema, output: z.object({ runs: z.array(reviewOutcomeSchema) }) });
+export const batchReviewOutcomesRpc = defineRpc({
+  name: "github-reviews.outcomes-batch",
+  input: z.object({ targets: z.array(reviewTargetSchema).min(1).max(PAGE_SIZE) }),
+  output: z.object({ runsByPr: z.record(z.string(), z.array(reviewOutcomeSchema)), failedTargets: z.array(z.string()) }),
+});

@@ -33,7 +33,7 @@ export class ReviewStore {
   async create(run: ReviewRun) {
     await mkdir(join(this.directory, "runs"), { recursive: true, mode: 0o700 });
     await chmod(this.directory, 0o700);
-    await this.lock(`run:${run.id}`, async () => {
+    return this.lock(`run:${run.id}`, async () => {
       const prior = await this.read(run.id);
       if (prior) {
         if (prior.repository !== run.repository || prior.number !== run.number || prior.headSha !== run.headSha || prior.baseSha !== run.baseSha || prior.reviewer.id !== run.reviewer.id) throw new Error("This review run already belongs to another snapshot.");
@@ -43,6 +43,7 @@ export class ReviewStore {
       const target = this.targetPath(run.repository, run.number);
       await mkdir(target, { recursive: true, mode: 0o700 });
       await this.write(join(target, `${run.id}.json`), { id: run.id });
+      return prior ?? run;
     });
   }
   async update(id: string, change: (run: ReviewRun) => ReviewRun): Promise<ReviewRun> {

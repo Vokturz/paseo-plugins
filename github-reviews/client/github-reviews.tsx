@@ -2,49 +2,74 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Pressable, ScrollView, Text, View } from "react-native";
-import { listReviewsRpc, PAGE_SIZE, POLL_INTERVAL_MS, type PullRequestScope, type ReviewPage } from "../shared/contracts";
+import { ActivityIndicator, AppState, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { listReviewsRpc, PAGE_SIZE, POLL_INTERVAL_MS, type PullRequestScope, type ReviewFilter, type ReviewPage } from "../shared/contracts";
 import { filterSettings } from "../shared/filters";
 import { FiltersPanel } from "./filters";
-import { ProjectAvailability } from "./project-availability";
 import { reviewerSettings } from "../shared/reviewer";
-import { ReviewAction, useReviewLaunch } from "./review-action";
+import { useReviewLaunch } from "./review-action";
+import { PullRequestRow } from "./pull-request-row";
+import { absoluteTime, relativeTime, searchPage } from "./list-presentation";
 import { prKey } from "../shared/publication";
+import { ReviewOutcomesProvider } from "./review-outcomes-provider";
+import { ChoicePicker } from "./choice-picker";
+import { tokensFor } from "./design";
+import { ReviewPageCache } from "./review-page-cache";
+import { loadRecovery } from "./load-recovery";
 
 function message(error: unknown) { return error instanceof Error ? error.message : "Could not load pull requests. Try refreshing again."; }
-function date(value: string) {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? "Unknown" : parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-}
+const reviewChoices: { id: ReviewFilter; label: string }[] = [
+  { id: "all", label: "All my reviews" }, { id: "awaiting", label: "Awaiting my review" },
+  { id: "reviewed", label: "Previously reviewed" }, { id: "outdated", label: "New commits since review" },
+];
 
 export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer }: PluginSurfaceProps & { onOpenReviewer?: () => void }) {
   const list = useRpc(listReviewsRpc);
+  const latestList = useRef(list);
+  latestList.current = list;
+  const [cache] = useState(() => new ReviewPageCache((input) => latestList.current(input)));
   const settings = useSettings(filterSettings);
   const reviewer = useSettings(reviewerSettings);
   const launcher = useReviewLaunch();
   const configured = reviewer.status === "ready" && Boolean(reviewer.values.provider && reviewer.values.model);
   const settingsRevision = settings.status === "ready" ? settings.revision : null;
   const [scope, setScope] = useState<PullRequestScope>("review-requested");
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [result, setResult] = useState<ReviewPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [now, setNow] = useState(Date.now);
   const inFlight = useRef(false);
   const generation = useRef(0);
   const currentPage = useRef(1);
   const c = theme.colors;
   const compact = layout.compact;
+  const t = tokensFor(theme, layout);
+  const recovery = error ? loadRecovery(error) : null;
+  const visiblePRs = searchPage(result?.pullRequests ?? [], search);
+  const visibleIds = new Set(visiblePRs.map((pr) => pr.id));
 
-  const load = useCallback(async (page: number) => {
+  const load = useCallback(async (page: number, refresh = false) => {
     if (inFlight.current || settingsRevision === null) return;
+    const input = { page, scope, reviewFilter: scope === "created" ? "all" as const : reviewFilter };
+    const cached = cache.read(input, settingsRevision);
+    if (cached && !refresh) {
+      currentPage.current = cached.page;
+      setNow(Date.now());
+      setResult(cached); setLoading(false); setError(null);
+      return;
+    }
     inFlight.current = true;
     const request = ++generation.current;
     setLoading(true);
     setError(null);
     try {
-      const next = await list({ page, scope });
+      const next = await cache.load(input, settingsRevision, refresh);
       if (generation.current !== request) return;
       currentPage.current = next.page;
+      setNow(Date.now());
       setResult(next);
     } catch (error) {
       if (generation.current === request) setError(message(error));
@@ -54,40 +79,56 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
         setLoading(false);
       }
     }
-  }, [list, scope, settingsRevision]);
+  }, [cache, scope, reviewFilter, settingsRevision]);
+
+  const resetView = (nextScope: PullRequestScope, nextFilter: ReviewFilter) => {
+    generation.current++;
+    inFlight.current = false;
+    currentPage.current = 1;
+    const cached = settingsRevision === null ? undefined : cache.read({ page: 1, scope: nextScope, reviewFilter: nextFilter }, settingsRevision);
+    setResult(cached ?? null); setLoading(!cached && settingsRevision !== null);
+    setError(null); setLinkError(null);
+  };
 
   const switchScope = (next: PullRequestScope) => {
     if (next === scope) return;
     // Invalidate the previous view's response immediately, even before effect cleanup.
-    generation.current++;
-    inFlight.current = false;
-    currentPage.current = 1;
-    setResult(null);
-    setLoading(true);
-    setError(null);
-    setLinkError(null);
+    resetView(next, reviewFilter);
     setScope(next);
+  };
+
+  const switchFilter = (next: ReviewFilter) => {
+    if (next === reviewFilter) return;
+    resetView(scope, next);
+    setReviewFilter(next);
   };
 
   useEffect(() => {
     currentPage.current = 1;
-    setResult(null);
+    const cached = settingsRevision === null ? undefined : cache.read({ page: 1, scope, reviewFilter }, settingsRevision);
+    setResult(cached ?? null);
     setError(null);
-    setLoading(settingsRevision !== null);
+    setLoading(!cached && settingsRevision !== null);
     void load(1);
+    return () => { generation.current++; inFlight.current = false; };
+  }, [cache, load, settingsRevision]);
+
+  // Keep the polling clock independent of view changes: switching a cached queue
+  // neither restarts the timer nor triggers a fresh GitHub request.
+  const currentLoad = useRef(load);
+  currentLoad.current = load;
+  useEffect(() => {
     const timer = setInterval(() => {
-      if (AppState.currentState !== "background" && AppState.currentState !== "inactive") void load(currentPage.current);
+      if (AppState.currentState !== "background" && AppState.currentState !== "inactive") { setNow(Date.now()); void currentLoad.current(currentPage.current, true); }
     }, POLL_INTERVAL_MS);
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") void load(currentPage.current);
+      if (state === "active") { setNow(Date.now()); void currentLoad.current(currentPage.current, true); }
     });
     return () => {
       clearInterval(timer);
       subscription.remove();
-      generation.current++;
-      inFlight.current = false;
     };
-  }, [load, settingsRevision]);
+  }, []);
 
   const openPR = async (url: string) => {
     setLinkError(null);
@@ -104,7 +145,7 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
     </Pressable>
   );
 
-  return <ScrollView style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 28, alignItems: "center" }}>
+  return <ReviewOutcomesProvider revision={result?.fetchedAt}><ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1, backgroundColor: c.surface0 }} contentContainerStyle={{ padding: compact ? 16 : 28, alignItems: "center" }}>
     <View style={{ width: "100%", maxWidth: 1050, gap: 18 }}>
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 14 }}>
         <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: c.surface2, alignItems: "center", justifyContent: "center" }}>
@@ -116,10 +157,8 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
         </View>
         {loading && <ActivityIndicator accessibilityLabel="Loading pull requests" size="small" color={c.accent} />}
         {onOpenReviewer && button("Reviewer setup", onOpenReviewer, false, "Bot")}
-        {button("Refresh", () => void load(currentPage.current), loading, "RefreshCw")}
+        {button("Refresh", () => void load(currentPage.current, true), loading, "RefreshCw")}
       </View>
-
-      <FiltersPanel theme={theme} settings={settings} />
 
       <View accessibilityRole="tablist" accessibilityLabel="Pull request lists" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {([{ scope: "review-requested", title: "My reviews", icon: "GitPullRequest" }, { scope: "created", title: "Created by me", icon: "GitBranch" }] as const).map((tab) => {
@@ -132,59 +171,59 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
           </Pressable>;
         })}
       </View>
+      <FiltersPanel theme={theme} settings={settings} leading={scope === "review-requested" ? <View style={{ width: compact ? "100%" : 260 }}>
+        <ChoicePicker label="Show reviews" placeholder="All my reviews" options={reviewChoices} value={reviewFilter} t={t} size="sm"
+          onChange={(id) => { const choice = reviewChoices.find((item) => item.id === id); if (choice) switchFilter(choice.id); }} />
+      </View> : undefined} />
+
+      <View style={{ gap: 5 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 11, backgroundColor: c.surface1 }}>
+          <Icon name="Search" size={15} color={c.foregroundMuted} />
+          <TextInput accessibilityLabel="Search pull requests on this page" placeholder="Search this page by title, repository, author or #number"
+            placeholderTextColor={c.foregroundMuted} value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
+            style={{ flex: 1, minWidth: 0, minHeight: 40, paddingVertical: 9, color: c.foreground, fontSize: 13 }} />
+          {!!search && <Pressable accessibilityRole="button" accessibilityLabel="Clear page search" onPress={() => setSearch("")} style={{ padding: 8 }}><Icon name="X" size={14} color={c.foregroundMuted} /></Pressable>}
+        </View>
+        <Text accessibilityLiveRegion="polite" style={{ color: c.foregroundMuted, fontSize: 11 }}>{search.trim() && result ? `${visiblePRs.length} of ${result.pullRequests.length} PRs on this page` : "Searches the current page only"}</Text>
+      </View>
 
       {result && <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 6 }}>
-        <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>@{result.login} · {result.totalCount}{result.incomplete ? "+" : ""} {result.totalCount === 1 ? "open PR" : "open PRs"}</Text>
-        <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Updated {date(result.fetchedAt)}</Text>
+        <Text style={{ color: c.foreground, fontSize: 13, fontWeight: "600" }}>@{result.login} · {result.totalCount}{result.incomplete || (result.reviewFilter === "outdated" && result.capped) ? "+" : ""} {result.totalCount === 1 ? "open PR" : "open PRs"}{result.reviewFilter === "outdated" ? " with new commits" : ""}</Text>
+        <Text accessibilityLabel={`Last refreshed ${absoluteTime(result.fetchedAt)}`} style={{ color: c.foregroundMuted, fontSize: 12 }}>Updated {relativeTime(result.fetchedAt, now)}</Text>
       </View>}
 
       {(error || linkError) && <View accessibilityRole="alert" style={{ borderWidth: 1, borderColor: c.border, borderLeftWidth: 3, borderLeftColor: c.statusDanger, backgroundColor: c.surface1, borderRadius: 12, padding: 16, gap: 8 }}>
-        <Text style={{ color: c.statusDanger, fontSize: 14, fontWeight: "600" }}>{error || linkError}</Text>
+        <Text style={{ color: c.statusDanger, fontSize: 14, fontWeight: "600" }}>{recovery?.title ?? linkError}</Text>
+        {error && <Text style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 20 }}>{error}</Text>}
+        {recovery && <Text style={{ color: c.foregroundMuted, fontSize: 13, lineHeight: 20 }}>{recovery.detail}</Text>}
+        {recovery?.command && <Text selectable style={{ color: c.foreground, fontFamily: "monospace", fontSize: 13 }}>{recovery.command}</Text>}
+        {error && button("Retry loading", () => void load(currentPage.current, true), loading, "RefreshCw")}
+        {error && linkError && <Text style={{ color: c.statusDanger, fontSize: 13 }}>{linkError}</Text>}
         {error && result && <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>Showing the last successful response. Refresh to try again.</Text>}
       </View>}
 
-      {!result && !loading && settingsRevision !== null && <View style={{ borderRadius: 16, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, padding: 24, gap: 14 }}>
-        <Text style={{ color: c.foreground, fontSize: 17, fontWeight: "600" }}>Connect GitHub on your Paseo host</Text>
-        <Text style={{ color: c.foregroundMuted, fontSize: 14, lineHeight: 22 }}>Install GitHub CLI on the machine running the Paseo daemon and sign in as the same OS user. Then return here and refresh.</Text>
-        <Text selectable style={{ color: c.foreground, fontFamily: "monospace", fontSize: 13, padding: 14, borderRadius: 10, backgroundColor: c.surface0 }}>gh auth login --hostname github.com</Text>
-        <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 19 }}>Uses the host's GitHub account, including GH_TOKEN or GITHUB_TOKEN when set. All clients connected to this daemon share that account.</Text>
-      </View>}
-
       {result?.incomplete && <Text accessibilityRole="alert" style={{ color: c.statusWarning, fontSize: 13 }}>GitHub returned partial search results. Refresh to try again.</Text>}
-      {result?.capped && <Text style={{ color: c.statusWarning, fontSize: 13 }}>GitHub search exposes only the first 1,000 matches. The total includes additional pull requests.</Text>}
+      {result?.capped && <Text style={{ color: c.statusWarning, fontSize: 13 }}>{result.reviewFilter === "outdated" ? "Only the first 1,000 reviewed PRs could be checked. Narrow your filters to check the rest; this count is a minimum." : "GitHub search exposes only the first 1,000 matches. The total includes additional pull requests."}</Text>}
       {result?.projectWarning && <Text accessibilityRole="alert" style={{ color: c.statusWarning, fontSize: 13 }}>{result.projectWarning}</Text>}
       {result?.headWarning && <Text accessibilityRole="alert" style={{ color: c.statusWarning, fontSize: 13 }}>{result.headWarning}</Text>}
 
       {result && result.pullRequests.length === 0 && <View style={{ borderRadius: 16, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, padding: 36, alignItems: "center", gap: 12 }}>
-        <Icon name={result.incomplete ? "Search" : "CircleCheck"} size={32} color={c.accent} />
-        <Text style={{ color: c.foreground, fontSize: 17, fontWeight: "600", textAlign: "center" }}>{result.incomplete ? "No matches in this partial response" : result.page > 1 ? "No pull requests on this page" : scope === "created" ? "No open PRs created by you" : "No open PRs involving your review"}</Text>
-        <Text style={{ color: c.foregroundMuted, fontSize: 13, textAlign: "center", lineHeight: 21 }}>{result.page > 1 ? "The list may have changed. Go back to the previous page or refresh." : "No open pull requests match this list and your saved filters. Try widening or clearing the filters."}</Text>
+        <Icon name={result.incomplete || result.capped ? "Search" : "CircleCheck"} size={32} color={c.accent} />
+        <Text style={{ color: c.foreground, fontSize: 17, fontWeight: "600", textAlign: "center" }}>{result.incomplete || (result.reviewFilter === "outdated" && result.capped) ? "No matches in this partial response" : result.page > 1 ? "No pull requests on this page" : scope === "created" ? "No open PRs created by you" : result.reviewFilter === "outdated" ? "No new commits since your reviews" : result.reviewFilter === "awaiting" ? "No pull requests awaiting your review" : result.reviewFilter === "reviewed" ? "No previously reviewed open PRs" : "No open PRs involving your review"}</Text>
+        <Text style={{ color: c.foregroundMuted, fontSize: 13, textAlign: "center", lineHeight: 21 }}>{result.page > 1 ? "The list may have changed. Go back to the previous page or refresh." : result.reviewFilter === "outdated" ? "No changed heads were found among the reviews checked. Refresh or widen the saved filters to check more pull requests." : "No open pull requests match this list and your saved filters. Try widening or clearing the filters."}</Text>
       </View>}
 
-      {result && result.pullRequests.length > 0 && <View style={{ borderWidth: 1, borderColor: c.border, borderRadius: 16, overflow: "hidden", backgroundColor: c.surface1 }}>
-        {result.pullRequests.map((pr, index) => <View key={pr.id}
-          style={{ flexDirection: "row", alignItems: "flex-start", gap: compact ? 10 : 15, padding: compact ? 16 : 20,
-            borderTopWidth: index ? 1 : 0, borderTopColor: c.border }}>
-          <View style={{ paddingTop: 3 }}><Icon name="GitPullRequest" size={18} color={pr.draft ? c.foregroundMuted : c.statusSuccess} /></View>
-          <View style={{ flex: 1, gap: 7 }}>
-            <Pressable accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number}: ${pr.title}`} onPress={() => void openPR(pr.url)} style={{ gap: 7 }}>
-              <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{pr.repository} <Text style={{ fontWeight: "600" }}>#{pr.number}</Text>{pr.draft ? " · Draft" : ""}</Text>
-              <Text style={{ color: c.foreground, fontSize: 15, lineHeight: 22, fontWeight: "600" }}>{pr.title}</Text>
-            </Pressable>
-            <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{pr.author ? `@${pr.author}` : "Deleted account"} · Updated {date(pr.updatedAt)}</Text>
-            <ProjectAvailability theme={theme} match={result.projectsByRepository[pr.repository.toLowerCase()]} />
-            {pr.labels.length > 0 && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-              {pr.labels.slice(0, 3).map((label) => <Text key={label} numberOfLines={1} style={{ maxWidth: 200, color: c.foregroundMuted, fontSize: 11, backgroundColor: c.surface2, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 }}>{label}</Text>)}
-              {pr.labels.length > 3 && <Text style={{ color: c.foregroundMuted, fontSize: 11, paddingVertical: 3 }}>+{pr.labels.length - 3}</Text>}
-            </View>}
-            <ReviewAction pr={pr} match={result.projectsByRepository[pr.repository.toLowerCase()]} theme={theme} layout={layout}
-              currentHead={result.headsByPr[prKey(pr.repository, pr.number)]}
-              navigation={navigation} configured={configured} onOpenReviewer={onOpenReviewer} launcher={launcher} />
-          </View>
-          <Pressable accessibilityRole="link" accessibilityLabel={`Open ${pr.repository} #${pr.number} on GitHub`} onPress={() => void openPR(pr.url)} style={{ padding: 5 }}>
-            <Icon name="ExternalLink" size={15} color={c.foregroundMuted} />
-          </Pressable>
-        </View>)}
+      {result && result.pullRequests.length > 0 && visiblePRs.length === 0 && <View style={{ padding: 24, gap: 10, borderWidth: 1, borderColor: c.border, borderRadius: 12, backgroundColor: c.surface1 }}>
+        <Text style={{ color: c.foreground, fontSize: 15, fontWeight: "600" }}>No matches on this page</Text>
+        <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>Try another search, clear it, or use the page controls to check another page.</Text>
+        {button("Clear search", () => setSearch(""), false, "X")}
+      </View>}
+
+      {result && result.pullRequests.length > 0 && <View style={{ display: visiblePRs.length ? "flex" : "none", borderWidth: 1, borderColor: c.border, borderRadius: 14, overflow: "hidden", backgroundColor: c.surface1 }}>
+        {result.pullRequests.map((pr) => <PullRequestRow key={pr.id} pr={pr} visible={visibleIds.has(pr.id)} first={visiblePRs[0]?.id === pr.id} now={now}
+          match={result.projectsByRepository[pr.repository.toLowerCase()]} theme={theme} layout={layout}
+          currentHead={result.headsByPr[prKey(pr.repository, pr.number)]} navigation={navigation} configured={configured}
+          onOpenReviewer={onOpenReviewer} launcher={launcher} onOpenPR={() => void openPR(pr.url)} />)}
       </View>}
 
       {result && (result.page > 1 || result.nextPage) && <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
@@ -194,5 +233,5 @@ export function GitHubReviewsSurface({ theme, layout, navigation, onOpenReviewer
       </View>}
       <Text style={{ color: c.foregroundMuted, fontSize: 12, lineHeight: 19 }}>Refreshes every minute while this view is open and the app is active. Sorted by most recently updated.</Text>
     </View>
-  </ScrollView>;
+  </ScrollView></ReviewOutcomesProvider>;
 }

@@ -4,9 +4,9 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { Tokens } from "./design";
 
-export function ChoicePicker({ label, placeholder, options, value, onChange, t, disabled = false, leading, icon }: {
+export function ChoicePicker({ label, placeholder, options, value, onChange, t, disabled = false, leading, icon, size = "md" }: {
   label: string; placeholder: string; options: { id: string; label: string; description?: string }[];
-  value: string; onChange: (id: string) => void; t: Tokens; disabled?: boolean; leading?: ReactNode; icon?: string;
+  value: string; onChange: (id: string) => void; t: Tokens; disabled?: boolean; leading?: ReactNode; icon?: string; size?: "sm" | "md";
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -16,10 +16,10 @@ export function ChoicePicker({ label, placeholder, options, value, onChange, t, 
   const visible = options.filter((option) => `${option.label} ${option.description ?? ""}`.toLowerCase().includes(search.trim().toLowerCase()));
   return <View style={{ gap: 8 }}>
     <Pressable accessibilityRole="button" accessibilityLabel={`${label}: ${selected?.label ?? placeholder}`} accessibilityState={{ expanded: open, disabled }} disabled={disabled} onPress={() => setOpen(!open)}
-      style={{ paddingHorizontal: 13, paddingVertical: 11, minHeight: 50, borderRadius: t.radius.md, borderWidth: 1, borderColor: open ? colors.accent : colors.border, backgroundColor: colors.surface0, opacity: disabled ? 0.5 : 1, flexDirection: "row", alignItems: "center", gap: 11 }}>
-      {leading ?? (icon ? <Icon name={icon} size={17} color={selected ? colors.accent : colors.foregroundMuted} /> : null)}
+      style={{ paddingHorizontal: size === "sm" ? 11 : 13, paddingVertical: size === "sm" ? 8 : 11, minHeight: size === "sm" ? 40 : 50, borderRadius: t.radius.md, borderWidth: 1, borderColor: open ? colors.accent : colors.border, backgroundColor: colors.surface0, opacity: disabled ? 0.5 : 1, flexDirection: "row", alignItems: "center", gap: size === "sm" ? 8 : 11 }}>
+      {leading ?? (icon ? <Icon name={icon} size={size === "sm" ? 14 : 17} color={selected ? colors.accent : colors.foregroundMuted} /> : null)}
       <View style={{ flex: 1, gap: 2, minWidth: 0 }}>
-        <Text numberOfLines={1} style={{ color: selected ? colors.foreground : colors.foregroundMuted, fontSize: 14 }}>{selected?.label ?? placeholder}</Text>
+        <Text numberOfLines={1} style={{ color: selected ? colors.foreground : colors.foregroundMuted, fontSize: size === "sm" ? 13 : 14 }}>{selected?.label ?? placeholder}</Text>
         {!!selected?.description && <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{selected.description}</Text>}
       </View>
       <Icon name={open ? "ChevronUp" : "ChevronDown"} size={16} color={colors.foregroundMuted} />

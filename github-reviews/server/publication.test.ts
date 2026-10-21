@@ -201,6 +201,27 @@ test("runtime binds tools to the run, records incomplete turns, preserves public
   assert.equal((await runtime.status(id))!.status, "published");
 });
 
+test("draft runs save validated findings locally and never contact GitHub for publication, even after becoming ready", async (t) => {
+  const f = await fixture(t), id = randomUUID();
+  const runtime = new ReviewRuntime(f.github, f.store, f.home);
+  const session = await runtime.prepare(id, { ...f.state.snapshot, draft: true });
+  assert.match(session.instructions, /review-only/); assert.match(session.instructions, /Do not publish/);
+  assert.equal((await f.store.read(id))!.reviewOnly, true);
+  f.state.snapshot.draft = false;
+  const retried = await runtime.prepare(id, f.state.snapshot);
+  assert.equal(retried.reviewOnly, true); assert.match(retried.instructions, /Mandatory review-only mode/);
+  const publisher = new ReviewPublisher(new Proxy(f.github, { get() { return () => { throw new Error("Review-only submission must not contact GitHub"); }; } }), f.store);
+  const result = await publisher.submit(id, issues);
+  assert.equal(result.status, "completed"); assert.equal(result.reviewUrl, null); assert.equal(result.reviewOnly, true);
+  assert.deepEqual((await f.store.read(id))!.submission?.findings, [finding]);
+  assert.equal((await publisher.submit(id, issues)).status, "completed");
+  await assert.rejects(publisher.submit(id, clean), /already saved different content/);
+  await runtime.turn(id, true); await runtime.turn(id, false); await runtime.blocked(id, "Later failure");
+  assert.equal((await runtime.status(id))!.status, "completed");
+  assert.equal(reviewProgress({ id, runId: id, headSha: HEAD, status: "idle" } as ReviewAgent, [result], HEAD).label, "Reviewed locally");
+  assert.equal(f.state.posts.length, 0);
+});
+
 test("UI distinguishes verified outcomes, legacy agents and newer commits", async (t) => {
   const f = await fixture(t), id = await f.create();
   const agent = { id, runId: id, headSha: HEAD, status: "idle" } as ReviewAgent;

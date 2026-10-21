@@ -1,8 +1,8 @@
 # GitHub reviews
 
 A Paseo sidebar view with **My reviews** and **Created by me** tabs for open
-GitHub pull requests. Lists the repository, PR number, title, author, labels,
-draft status and last update. Select a PR title to open it in your browser, or
+GitHub pull requests. Compact rows show the repository, PR number, title, author,
+review status and relative update time. Select a PR title to open it in your browser, or
 start a reviewer agent in a matching local project.
 
 ## Install
@@ -17,6 +17,15 @@ npm run typecheck
 npm test
 paseo plugin install "$PWD"
 ```
+
+Local-directory installs do not run the manifest's build command. Run `npm ci`
+first: it installs the SDK type dependencies and generates the prompt and MCP
+entrypoint paths. If installation fails with `Could not resolve type dependency
+"@getpaseo/client"`, run `npm ci` in `github-reviews`, then retry. If Paseo already
+registered the failed installation, use `paseo plugin reload github-reviews`.
+
+When already inside `github-reviews`, install `"$PWD"`; use
+`"$PWD/github-reviews"` only from the repository root.
 
 Enable the plugin in Paseo Settings → Plugins if needed. Open **GitHub reviews**
 in the sidebar or **Open GitHub pull requests** in the command center.
@@ -56,10 +65,45 @@ saved filters. Changes can take time to appear in
 GitHub's search index. The existing `review-requested` RPC scope ID is preserved
 for compatibility.
 
+Within **My reviews**, use the compact dropdown beside the tabs to choose
+**All my reviews**, **Awaiting my review** (currently
+requested), **Previously reviewed**, or **New commits since review**. Requests can
+include a new request on a PR you reviewed earlier. The new-commits filter compares
+the current head with your latest submitted GitHub review, including reviews made
+outside Paseo and dismissed reviews; pending reviews are excluded. Changed heads,
+including force pushes, count as needing another review. Matches are filtered
+before pagination, rather than just filtering the visible page.
+
+That comparison checks up to GitHub's first 1,000 reviewed PRs in batches of 100.
+Partial reads, unavailable review commits, the search cap, or a time budget reached
+between batches display a warning and a minimum count. Narrow the owner/time
+filters to check more relevant PRs.
+
 **Created by me** uses `is:pr is:open author:LOGIN` to show your own open PRs,
 including drafts, regardless of review requests. Merged and closed PRs are
-excluded. Switching tabs starts at page one and clears the previous list;
-responses from the previous tab cannot overwrite the newly selected list.
+excluded. Switching tabs or review queues starts at page one. Each visited queue
+and page is cached while this view is open, so returning displays it immediately
+without another fetch. A queue or page loads once on its first visit; rapid
+switches reuse any request already in progress. Responses from a previous view
+cannot overwrite the newly selected list. Saved-filter changes invalidate cached
+pages, and a refresh that detects an account switch clears the old account's cache.
+
+## List layout and search
+
+Rows start collapsed. **Details** reveals project availability and selection,
+labels, full commit IDs, exact dates, extra instructions, and review history.
+The main action is **Start review** for a new run, **Open agent** while reviewing
+or when an agent needs attention, and **View review** for a verified publication.
+**Run again** is a secondary action in Details and is disabled while a review is
+active. The initial agent-list check completes before another run can be started.
+
+**Search this page** instantly matches titles, repositories, authors (with or
+without `@`), and PR numbers (with or without `#`). Multiple terms must all match.
+The match count is separate from GitHub's total. Search never fetches data or
+changes server filters; hidden rows retain their state and subscriptions. Page
+controls remain available when a page has no search matches. Clear the search
+to restore all loaded rows. Relative dates update with the view; exact PR and
+agent update dates are available in Details and accessibility labels.
 
 ## Local projects
 
@@ -134,10 +178,18 @@ to GitHub.
 ## Start a review
 
 Save a model in **Reviewer setup**, then select **Start review** on a PR with a
-matching local project. When several projects match, select one in the same
-searchable dropdown used by Linear tickets. Both PR tabs support launching.
+matching local project. When several projects match, **Choose project** opens
+Details; select one in the searchable dropdown. Both PR tabs support launching.
 
-Select **Add instructions** before launching to enter optional instructions or
+New reviewer agents show their first user message as a compact PR card: title,
+GitHub link, branch comparison, reviewed head/base commits, and a preview of any
+additional focus. Draft runs show their review-only mode. **Full instructions and
+context** expands the complete original launch message. The card changes timeline
+presentation; the agent still receives the entire saved prompt, extra context,
+snapshot, and required publication instructions. Messages without the card marker,
+including older launches, keep Paseo's normal rendering.
+
+Open **Details → Add instructions** before launching to enter optional instructions or
 context for that PR, such as "Look closely at session expiry and concurrent
 requests." This text is added to the saved review prompt for the run; it does
 not replace or change your saved reviewer setup. Up to 8,000 characters are
@@ -162,7 +214,7 @@ Progress and errors appear beside the launch button. Repeated clicks and retries
 reuse the launch request; concurrent requests for the same PR, project and instructions share
 the pending launch. If workspace or agent creation cannot be confirmed, check
 the project's workspaces before starting another review. After success, select
-**Open agent** to see its findings. **Run again** starts a fresh agent and worktree
+**Open agent** to see its findings. **Details → Run again** starts a fresh agent and worktree
 for the same PR, loading its latest commits and your current saved reviewer setup.
 It uses a new launch request; retries of a failed request still reuse that request's
 ID. The previous agent stays accessible while the new launch is pending or fails.
@@ -176,8 +228,8 @@ and PR-number labels on the Paseo host. Links survive page reloads, plugin reloa
 and switching clients. All unarchived runs remain listed with their title, status,
 and update time, including idle or completed agents. Archiving or removing an
 agent removes its link immediately; the list is also refreshed every minute and
-when the app returns to the foreground. **Run again** remains available alongside
-existing agents. Links remain accessible even if the matching local project can
+when the app returns to the foreground. Review history and **Run again** are
+available in Details. Links remain accessible even if the matching local project can
 no longer be found. Failed agent-list reads show a retry action.
 
 Starting a review with the default prompt authorizes the agent to write and
@@ -190,9 +242,17 @@ There is no automatic event listener or background launcher yet.
 
 ## Review outcomes and publication
 
-Linked agents show **Reviewing**, **Publishing…**, **Published**, **Blocked**, or
-**No new review**. **Published** requires a verified GitHub submission and exposes
-**View GitHub review**. Idle agents without a recorded outcome show **Outcome
+Draft PRs offer **Review draft locally** with a review-only notice before launch.
+The server checks the current draft state when starting the run. Its review tool
+saves validated findings locally and makes no GitHub publication requests, even
+if the PR becomes ready later. Findings remain in the agent conversation; start
+a new run after marking the PR ready if you want to publish. The run's mode is
+preserved across retries and restarts.
+
+Linked agents show **Reviewing**, **Reviewing locally**, **Reviewed locally**,
+**Publishing…**, **Published**, **Blocked**, or **No new review**.
+**Published** requires a verified GitHub submission and exposes
+**View review**. Idle agents without a recorded outcome show **Outcome
 unknown**; finishing a turn never counts as publication. An unfinished turn that
 ends without a verified submission records a blocker. The native agent status
 remains visible separately.
@@ -201,7 +261,11 @@ The row records the reviewed commit. **New commits since review** appears when
 the PR's current head differs, with **Run again** available to inspect the new
 snapshot. Freshness is checked whenever the PR list refreshes. Failed head
 checks display a warning rather than assuming a review is current. Publication
-outcomes refresh every ten seconds while the view is active and survive reloads.
+outcomes use one batched request for linked PRs: active reviews and pending
+publication refresh every ten seconds, settled reviews every minute. PRs without
+linked agents do not poll outcomes. Polling pauses while the app is in the
+background; foregrounding, refreshing the PR list, and agent status changes
+refresh outcomes immediately. Outcomes survive reloads.
 Older agents retain their links; publication is not inferred from their text.
 
 Every new reviewer receives a `github_review` MCP server with `submit_review`,
@@ -231,7 +295,8 @@ provided publication tools; they do not sandbox an agent's shell access.
 
 ## Local filters
 
-Open **Filters → Edit filters** to narrow both tabs:
+Select the compact filter summary beside the review dropdown (for example,
+**All owners · Any time**) to open the editor and narrow both tabs:
 
 - **Organizations or users**: select repository owners from a two-column
   checkbox grid. The list includes your account and owners of repositories your
@@ -267,9 +332,15 @@ without your saved restrictions.
 Results are ordered by most recently updated, with 50 PRs per page and Previous /
 Next controls. The current page refreshes every minute while the view is mounted
 and the app is active, and when the app returns to the foreground. **Refresh**
-updates it immediately. There is no daemon background poller or event listener.
+fetches a fresh response immediately. Changing queues or returning to cached
+pages does not trigger a refresh or restart the polling clock; the visible
+**Updated** timestamp identifies the displayed response. There is no daemon
+background poller or event listener.
 Failed refreshes preserve the last successful page and display the error. Partial
 search results and GitHub's 1,000-result search cap are explicitly shown.
+Recovery guidance distinguishes missing GitHub CLI, expired authentication,
+repository/SSO access, rate limits, timeouts, and unexpected responses. Login
+instructions appear only when the CLI or authentication needs attention.
 
 The plugin reads GitHub data and can create local reviewer agents. Agents using
 the default prompt may publish reviews; refreshing the list remains read-only.
@@ -310,3 +381,13 @@ responses and restart recovery, fix acknowledgments, private receipts, lifecycle
 outcomes, and freshness comparisons. A separate MCP/CLI process test uses a fake
 GitHub executable and verifies JSON submission and idempotent retry without
 writing to GitHub.
+
+Queue tests cover requested/reviewed scoping, changed heads beyond the first
+search page, filtered pagination, search caps, incomplete data and error recovery.
+Polling tests cover full-page batching, active/settled cadence, background pauses,
+partial failures, unmounts and stale responses. Draft tests verify persistent
+review-only mode, local result storage and absence of publication requests.
+Presentation tests cover local search, relative-time boundaries, primary actions
+for active/published/blocked reviews, missing setup and project selection.
+Launch-card tests cover complete message preservation, draft mode, focus previews,
+external text escaping, malformed metadata, and validated GitHub links.

@@ -7,6 +7,7 @@ import { watchReviewAgents, type ReviewAgentsState } from "./review-agents";
 export function useReviewAgents(pr: PullRequest, createdAgentId?: string) {
   const paseo = usePaseo();
   const [state, setState] = useState<ReviewAgentsState>({ agents: [], loading: true, error: null });
+  const [syncedAgentId, setSyncedAgentId] = useState<string | undefined>();
   const watcher = useRef<ReturnType<typeof watchReviewAgents> | null>(null);
   useEffect(() => {
     const current = watchReviewAgents(paseo.agents, pr.repository, pr.number, setState);
@@ -17,6 +18,11 @@ export function useReviewAgents(pr: PullRequest, createdAgentId?: string) {
     const foreground = AppState.addEventListener("change", (state) => { if (state === "active") void current.refresh(); });
     return () => { clearInterval(timer); foreground.remove(); current.dispose(); watcher.current = null; };
   }, [paseo, pr.repository, pr.number]);
-  useEffect(() => { if (createdAgentId) void watcher.current?.refresh(); }, [createdAgentId]);
-  return { ...state, refresh: () => watcher.current?.refresh() };
+  useEffect(() => {
+    if (!createdAgentId) return;
+    let current = true;
+    void watcher.current?.refresh().finally(() => { if (current) setSyncedAgentId(createdAgentId); });
+    return () => { current = false; };
+  }, [createdAgentId, paseo, pr.repository, pr.number]);
+  return { ...state, pendingCreatedAgentId: createdAgentId !== syncedAgentId ? createdAgentId : undefined, refresh: () => watcher.current?.refresh() };
 }

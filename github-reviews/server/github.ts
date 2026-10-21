@@ -1,15 +1,17 @@
 import { execFile } from "node:child_process";
 import { z } from "zod";
-import { listInputSchema, listOwnersInputSchema, MAX_PAGE, ownerPageSchema, PAGE_SIZE, reviewPageSchema, reviewTargetSchema, type PullRequestScope, type ReviewPage } from "../shared/contracts";
+import { listInputSchema, listOwnersInputSchema, MAX_PAGE, ownerPageSchema, PAGE_SIZE, reviewPageSchema, reviewTargetSchema, type PullRequestScope, type ReviewFilter, type ReviewPage } from "../shared/contracts";
+import { loadOutdatedReviews } from "./review-queue";
 import { filtersSchema, ownerSchema, type Filters, type OwnerOption } from "../shared/filters";
 import { prKey, reviewerIdentitySchema, shaSchema } from "../shared/publication";
 
 export type RunGh = (args: string[], input?: string) => Promise<string>;
 
-export function searchQuery(login: string, scope: PullRequestScope, filters: Filters, now = new Date()): string {
+export function searchQuery(login: string, scope: PullRequestScope, filters: Filters, now = new Date(), reviewFilter: ReviewFilter = "all"): string {
   const normalized = filtersSchema.parse(filters);
   // Use an explicit union: review-involves can omit PRs returned by reviewed-by.
-  const terms = ["is:pr", "is:open", scope === "created" ? `author:${login}` : `(review-requested:${login} OR reviewed-by:${login})`];
+  const involvement = reviewFilter === "awaiting" ? `review-requested:${login}` : reviewFilter === "reviewed" || reviewFilter === "outdated" ? `reviewed-by:${login}` : `(review-requested:${login} OR reviewed-by:${login})`;
+  const terms = ["is:pr", "is:open", scope === "created" ? `author:${login}` : involvement];
   // Advanced search intersects repeated user qualifiers; group an explicit union
   // so the saved owners continue to match any account in both search modes.
   const owners = normalized.owners.map((owner) => `user:${owner}`);
@@ -61,7 +63,7 @@ const prDetailSchema = z.object({
   base: z.object({ sha: commitSchema, ref: z.string(), repo: z.object({ full_name: z.string() }) }),
   head: z.object({ sha: commitSchema, ref: z.string() }),
 });
-export type ReviewDetail = { repository: string; number: number; title: string; url: string; baseSha: string; headSha: string; baseRef: string; headRef: string };
+export type ReviewDetail = { repository: string; number: number; title: string; url: string; baseSha: string; headSha: string; baseRef: string; headRef: string; draft?: boolean };
 export type PrSnapshot = ReviewDetail & { state: "open" | "closed"; draft: boolean };
 const reviewSchema = z.object({ id: z.number().int().positive(), html_url: z.string(), state: z.string(), body: z.string().nullable(), commit_id: shaSchema, user: reviewerIdentitySchema });
 const commentSchema = z.object({ id: z.number().int().positive(), html_url: z.string(), body: z.string(), path: z.string(), line: z.number().nullable().optional(), original_line: z.number().nullable().optional(), side: z.enum(["LEFT", "RIGHT"]).optional(), start_line: z.number().nullable().optional(), original_start_line: z.number().nullable().optional(), pull_request_review_id: z.number().int().positive().optional(), user: reviewerIdentitySchema });
@@ -89,7 +91,7 @@ export class GitHubReviews {
   constructor(private readonly run: RunGh = runGh) {}
 
   async detail(repository: string, number: number): Promise<ReviewDetail> {
-    const { state, draft: _draft, ...detail } = await this.snapshot(repository, number);
+    const { state, ...detail } = await this.snapshot(repository, number);
     if (state !== "open") throw new Error("This pull request is no longer open. Refresh the list.");
     return detail;
   }
@@ -165,15 +167,18 @@ export class GitHubReviews {
     return ownerPageSchema.parse({ login, owners: [...owners.values()].sort((a, b) => a.login.localeCompare(b.login)), nextPage: repositories.data.length === 100 ? page + 1 : null });
   }
 
-  async list(input: { page?: number; scope?: PullRequestScope } = {}, savedFilters: Filters = filtersSchema.parse({})): Promise<ReviewPage> {
-    const { page, scope } = listInputSchema.parse(input);
+  async list(input: { page?: number; scope?: PullRequestScope; reviewFilter?: ReviewFilter } = {}, savedFilters: Filters = filtersSchema.parse({})): Promise<ReviewPage> {
+    const { page, scope, reviewFilter: requestedFilter } = listInputSchema.parse(input);
+    const reviewFilter = scope === "created" ? "all" : requestedFilter;
     const filters = filtersSchema.parse(savedFilters);
     // Resolve the account on every request so gh auth switch never mixes accounts.
     const viewer = viewerSchema.safeParse(await this.api("user"));
     if (!viewer.success) throw new Error("GitHub did not return a valid signed-in account.");
     const login = viewer.data.login;
+    const query = searchQuery(login, scope, filters, new Date(), reviewFilter);
+    if (reviewFilter === "outdated") return loadOutdatedReviews((body) => this.api("graphql", [], body), { login, page, scope, filters, query });
     const parsed = searchSchema.safeParse(await this.api("search/issues", [
-      `q=${searchQuery(login, scope, filters)}`,
+      `q=${query}`,
       ...(scope === "review-requested" ? ["advanced_search=true"] : []),
       "sort=updated", "order=desc", `per_page=${PAGE_SIZE}`, `page=${page}`,
     ]));
@@ -182,6 +187,7 @@ export class GitHubReviews {
     return reviewPageSchema.parse({
       login,
       scope,
+      reviewFilter,
       filters,
       pullRequests: result.items.map((pr) => ({
         id: pr.id,
