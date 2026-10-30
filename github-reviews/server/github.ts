@@ -133,7 +133,11 @@ export class GitHubReviews {
   reviews(repository: string, number: number) { return this.pages(`repos/${repository}/pulls/${number}/reviews`, reviewSchema); }
   comments(repository: string, number: number) { return this.pages(`repos/${repository}/pulls/${number}/comments`, commentSchema); }
   files(repository: string, number: number) { return this.pages(`repos/${repository}/pulls/${number}/files`, fileSchema); }
-  reviewComments(repository: string, number: number, reviewId: number) { return this.pages(`repos/${repository}/pulls/${number}/reviews/${reviewId}/comments`, commentSchema); }
+  async reviewComments(repository: string, number: number, reviewId: number) {
+    // The review-specific endpoint can omit line/range/side anchors. Read every
+    // PR comment page before filtering so verification sees complete anchors.
+    return (await this.comments(repository, number)).filter((comment) => comment.pull_request_review_id === reviewId);
+  }
   async postReview(repository: string, number: number, body: Record<string, unknown>) {
     return reviewSchema.parse(await this.api(`repos/${repository}/pulls/${number}/reviews`, [], body));
   }

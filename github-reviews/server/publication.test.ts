@@ -111,7 +111,10 @@ test("uncertain missing reviews block all runs; definite rejection permits retry
   assert.equal(f.state.posts.length, 0);
   const g = await fixture(t), other = await g.create();
   g.state.reject = true;
-  await g.publisher.submit(other, clean);
+  const rejected = await g.publisher.submit(other, clean);
+  assert.equal(rejected.status, "blocked");
+  assert.equal(rejected.reviewUrl, null);
+  assert.equal(rejected.reason, "GitHub rejected this request.");
   assert.equal((await g.store.read(other))!.uncertain, false);
   g.state.reject = false;
   assert.equal((await g.publisher.submit(other, clean)).status, "published");
@@ -150,7 +153,10 @@ test("requires valid diff anchors and refuses unverifiable returned findings", a
   assert.equal(f.state.posts.length, 0);
   f.github.reviewComments = async () => [];
   const id = await f.create();
-  assert.equal((await f.publisher.submit(id, issues)).status, "blocked");
+  const pending = await f.publisher.submit(id, issues);
+  assert.equal(pending.status, "verifying");
+  assert.equal(pending.reviewUrl, "https://github.com/acme/web/pull/42#pullrequestreview-100");
+  assert.match(pending.reason!, /GitHub accepted the review; verification is pending/);
   assert.equal((await f.store.read(id))!.uncertain, true);
   assert.equal(f.state.posts.length, 1);
   assert.equal(anchored(finding, patch), true);
@@ -232,6 +238,13 @@ test("UI distinguishes verified outcomes, legacy agents and newer commits", asyn
   assert.equal(reviewProgress(agent, [run], HEAD).outdated, false);
   assert.equal(reviewProgress(agent, [run], null).outdated, false);
   assert.equal(reviewProgress(agent, [run], HEAD).reviewUrl, run.reviewUrl);
+  const pending = { ...run, status: "verifying" as const, reason: "GitHub accepted the review; verification is pending." };
+  assert.equal(reviewProgress(agent, [pending], HEAD).label, "Verification pending");
+  assert.equal(reviewProgress(agent, [pending], HEAD).reviewUrl, run.reviewUrl);
+  await f.store.update(id, (current) => ({ ...current, ...pending, uncertain: true }));
+  const runtime = new ReviewRuntime(f.github, f.store, f.home);
+  await runtime.turn(id, true); await runtime.turn(id, false); await runtime.blocked(id, "Later message");
+  assert.equal((await runtime.status(id))!.status, "verifying");
   assert.equal(reviewProgress(agent, [{ ...run, status: "blocked", reason: "Changed head", reviewUrl: null }], NEW).label, "Blocked");
 });
 
@@ -260,7 +273,9 @@ test("cannot acknowledge a subset of prior findings or verify a changed returned
       return review;
     };
     const id = await g.create();
-    assert.equal((await g.publisher.submit(id, clean)).status, "blocked");
+    const pending = await g.publisher.submit(id, clean);
+    assert.equal(pending.status, "verifying");
+    assert.equal(pending.reviewUrl, null);
     assert.equal((await g.store.read(id))!.uncertain, true);
   }
 });

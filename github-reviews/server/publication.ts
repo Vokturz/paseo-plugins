@@ -48,10 +48,13 @@ export class ReviewPublisher {
 
   private async verify(run: ReviewRun, review: GitHubReview) {
     if (!sameAccount(run.reviewer, review.user) || review.state.toUpperCase() !== "COMMENTED" || review.commit_id !== run.headSha || !run.requestBody || review.body !== run.requestBody.body || !review.body?.includes(`<!-- paseo-review:${run.headSha}:${run.baseSha}:${run.digest} -->`)) throw new Error("The submitted review's account, commit or content could not be verified.");
+    const url = reviewUrl(run, review);
+    // Keep the validated receipt even if inline verification is delayed or fails.
+    await this.store.update(run.id, (current) => ({ ...current, status: "verifying", reviewUrl: url, uncertain: true,
+      reason: "GitHub accepted the review; verification is pending." }));
     const comments = await this.github.reviewComments(run.repository, run.number, review.id);
     const expected = (run.requestBody?.comments ?? []) as { body: string; path: string; line: number; side: string; start_line?: number }[];
     if (comments.length !== expected.length || expected.some((item) => !comments.some((comment) => sameAccount(run.reviewer, comment.user) && comment.path === item.path && comment.side === item.side && (comment.line ?? comment.original_line) === item.line && (comment.start_line ?? comment.original_start_line ?? comment.line ?? comment.original_line) === (item.start_line ?? item.line) && comment.body === item.body))) throw new Error("The submitted inline findings could not all be verified.");
-    const url = reviewUrl(run, review);
     return this.store.update(run.id, (current) => ({ ...current, status: "published", reviewUrl: url, reason: null, uncertain: false }));
   }
 
@@ -147,12 +150,23 @@ export class ReviewPublisher {
         if (!sameAccount(finalIdentity, run.reviewer) || latest.state !== "open" || latest.draft || latest.headSha !== run.headSha || latest.baseSha !== run.baseSha) throw new Error("The GitHub account or PR snapshot changed during publication checks. No review was posted.");
         if (JSON.stringify(latestReviews) !== JSON.stringify(reviews) || JSON.stringify(latestComments) !== JSON.stringify(comments)) throw new Error("The PR review history changed during publication checks. Resubmit to check duplicates against the updated history.");
         run = await this.store.update(id, (current) => ({ ...current, requestBody, uncertain: true }));
-        const posted = await this.github.postReview(run.repository, run.number, requestBody);
+        let posted: GitHubReview;
+        try { posted = await this.github.postReview(run.repository, run.number, requestBody); }
+        catch (error) {
+          // Only a rejected POST proves that no review was created. A rejection
+          // of a later verification GET must keep duplicate prevention in place.
+          if ((error as { publicationRejected?: boolean })?.publicationRejected === true) {
+            await this.store.update(id, (current) => ({ ...current, uncertain: false }));
+          }
+          throw error;
+        }
+        await this.store.update(id, (current) => ({ ...current, status: "verifying", reason: "GitHub accepted the review; verification is pending." }));
         return await this.verify(run, posted);
       } catch (error) {
         const message = error instanceof Error ? error.message : "The GitHub review could not be published.";
-        return this.store.update(id, (current) => current.status === "published" ? current : { ...current, status: "blocked", reason: message,
-          uncertain: (error as { publicationRejected?: boolean })?.publicationRejected === true ? false : current.uncertain });
+        return this.store.update(id, (current) => current.status === "published" ? current : { ...current,
+          status: current.status === "verifying" ? "verifying" : "blocked",
+          reason: current.status === "verifying" ? `GitHub accepted the review; verification is pending. ${message}` : message });
       }
     });
     return reviewOutcomeSchema.parse(result);

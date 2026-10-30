@@ -30,6 +30,7 @@ test("active agents take priority over historical publication and never offer an
 
 test("published runs open their verified review; other outcomes open the existing agent", () => {
   assert.deepEqual(reviewPrimaryAction({ ...defaults, agents: [idle], runs: [run] }), { kind: "view-review", label: "View review", url: run.reviewUrl });
+  assert.deepEqual(reviewPrimaryAction({ ...defaults, agents: [idle], runs: [{ ...run, status: "verifying" }] }), { kind: "view-review", label: "View review", url: run.reviewUrl });
   for (const status of ["blocked", "completed", "skipped"] as const) {
     assert.deepEqual(reviewPrimaryAction({ ...defaults, agents: [idle], runs: [{ ...run, status, reviewUrl: null }] }), { kind: "open-agent", label: "Open agent", agentId: id });
   }

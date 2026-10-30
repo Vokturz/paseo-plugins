@@ -32,6 +32,17 @@ test("suspends background requests, refreshes on foreground, and removes unmount
   remove(); poller.setForeground(true); poller.poll(); await poller.flush(); assert.equal(calls, 1);
 });
 
+test("polls accepted reviews awaiting verification even after the agent stops", async () => {
+  let now = 0, calls = 0;
+  const run = reviewOutcomeSchema.parse({ id: "17e8c7a2-7cfa-4dce-90a5-50bd1e93f5fa", agentId: "agent", repository: "acme/web", number: 1,
+    headSha: "a".repeat(40), baseSha: "b".repeat(40), status: "verifying", reason: "Verification pending", reviewUrl: "https://github.com/acme/web/pull/1#pullrequestreview-1", updatedAt: new Date().toISOString() });
+  const poller = new OutcomePoller(async () => { calls++; return { runsByPr: { "acme/web#1": [run] }, failedTargets: [] }; }, () => now);
+  poller.watch(target(1), false, () => {});
+  await poller.flush();
+  now = 10_000; poller.poll(); await poller.flush();
+  assert.equal(calls, 2);
+});
+
 test("preserves successful statuses across partial and transport failures", async () => {
   const run = reviewOutcomeSchema.parse({ id: "17e8c7a2-7cfa-4dce-90a5-50bd1e93f5fa", agentId: "agent", repository: "acme/web", number: 1,
     headSha: "a".repeat(40), baseSha: "b".repeat(40), status: "published", reason: null, reviewUrl: "https://github.com/acme/web/pull/1#pullrequestreview-1", updatedAt: new Date().toISOString() });

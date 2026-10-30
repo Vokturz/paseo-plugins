@@ -8,9 +8,9 @@ export function reviewProgress(agent: ReviewAgent, runs: ReviewOutcome[], curren
   const status = interrupted ? "blocked" : run?.status ?? (active ? "reviewing" : null);
   const head = run?.headSha ?? agent.headSha;
   return {
-    status, label: status === "completed" ? "Reviewed locally" : status === "published" ? "Published" : status === "publishing" ? "Publishing…" : status === "blocked" ? "Blocked" : status === "skipped" ? "No new review" : status === "reviewing" ? run?.reviewOnly ? "Reviewing locally" : "Reviewing" : "Outcome unknown",
+    status, label: status === "completed" ? "Reviewed locally" : status === "published" ? "Published" : status === "verifying" ? "Verification pending" : status === "publishing" ? "Publishing…" : status === "blocked" ? "Blocked" : status === "skipped" ? "No new review" : status === "reviewing" ? run?.reviewOnly ? "Reviewing locally" : "Reviewing" : "Outcome unknown",
     reason: interrupted ? "The agent stopped without a verified publication. Open the agent to check or resume the review." : run?.reason ?? null,
-    reviewUrl: run?.status === "published" ? run.reviewUrl : null,
+    reviewUrl: run && ["published", "verifying"].includes(run.status) ? run.reviewUrl : null,
     headSha: head, outdated: Boolean(currentHead && head && currentHead.toLowerCase() !== head.toLowerCase()),
   };
 }

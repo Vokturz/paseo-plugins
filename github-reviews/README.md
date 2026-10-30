@@ -282,7 +282,9 @@ GitHub user ID/login, open/non-draft state, exact head/base commits, pending
 reviews, fully paginated review history, and diff anchors before submitting a
 single `COMMENT` review at the recorded head. It checks account/snapshot/history
 again immediately before submission, then verifies the returned review and inline
-comments before recording its link. A changed snapshot requires a fresh run.
+comments. Inline verification reads all pages of PR comments and filters by exact
+review ID, because review-specific comment responses can omit diff anchors.
+A changed snapshot requires a fresh run.
 
 Publication is serialized per PR across this host's reviewer processes. Hidden
 GitHub markers and stable finding keys prevent repeated submissions and repeated
@@ -297,6 +299,11 @@ checkouts. They include review text, account identity, commit IDs, and links;
 public status RPCs omit the prepared payloads. Files use owner-only permissions.
 An uncertain submission blocks another write until GitHub confirms its outcome;
 retry the same payload or use `get_review_status` to reconcile it. The plugin
+reports an accepted review awaiting verification as `verifying` (shown as
+**Verification pending**) and retains its link once the review identity and URL
+are validated. A rejected publication remains `blocked`. Reconciliation also
+repairs older blocked/uncertain runs through the same read-only verification
+path, without posting another review. The plugin
 never edits or deletes an existing pending review. These checks govern the
 provided publication tools; they do not sandbox an agent's shell access.
 

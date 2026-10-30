@@ -33,7 +33,7 @@ export class OutcomePoller {
   }
   poll() {
     for (const [key, entry] of this.entries) {
-      const active = entry.active || entry.state.runs.some((run) => run.status === "publishing");
+      const active = entry.active || entry.state.runs.some((run) => ["publishing", "verifying"].includes(run.status));
       if (this.now() - entry.lastAttempt >= (active ? 10_000 : 60_000)) this.dirty.add(key);
     }
     this.schedule();
