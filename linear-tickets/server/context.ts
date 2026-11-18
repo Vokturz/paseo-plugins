@@ -1,4 +1,4 @@
-import { LINEAR_ACCESS_NOTE, NO_LINEAR_ACCESS_NOTE, type Issue, type RelatedTicket, type TicketDetail, type TicketRelations } from "../shared/contracts";
+import { LINEAR_ACCESS_NOTE, NO_LINEAR_ACCESS_NOTE, type CustomerRef, type CustomerRequest, type Issue, type IssueLabel, type RelatedTicket, type TicketDetail, type TicketRelations } from "../shared/contracts";
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Linear returned an unexpected response.");
@@ -13,6 +13,48 @@ export function label(value: unknown): string {
   return "";
 }
 
+function nodesOf(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return value && typeof value === "object" && Array.isArray((value as { nodes?: unknown }).nodes) ? (value as { nodes: unknown[] }).nodes : [];
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+// A label node with its parent group. Plain strings (older cached payloads) carry no ID.
+export function normalizeLabel(value: unknown): IssueLabel | null {
+  const node = optionalRecord(value);
+  if (!node || typeof node.id !== "string" || !node.id || typeof node.name !== "string") return null;
+  const parent = optionalRecord(node.parent);
+  const team = optionalRecord(node.team);
+  return {
+    id: node.id,
+    name: node.name,
+    color: typeof node.color === "string" ? node.color : "",
+    groupId: parent && typeof parent.id === "string" && parent.id ? parent.id : null,
+    groupName: parent ? label(parent.name) : "",
+    groupMulti: Boolean(parent && parent.groupType === "multiSelect"),
+    teamId: team && typeof team.id === "string" && team.id ? team.id : null,
+  };
+}
+
+// "Area / Core API" for grouped labels, the bare name otherwise — the same form Linear's picker uses.
+export function labelDisplay(item: Pick<IssueLabel, "name" | "groupName">): string {
+  return item.groupName ? `${item.groupName} / ${item.name}` : item.name;
+}
+
+function issueCustomers(issue: Record<string, unknown>): CustomerRef[] {
+  const seen = new Map<string, CustomerRef>();
+  for (const need of nodesOf(issue.needs)) {
+    const customer = optionalRecord(optionalRecord(need)?.customer);
+    if (customer && typeof customer.id === "string" && customer.id && !seen.has(customer.id)) {
+      seen.set(customer.id, { id: customer.id, name: label(customer.name) || "Customer" });
+    }
+  }
+  return [...seen.values()];
+}
+
 export function normalizeIssue(value: unknown): Issue {
   const issue = record(value);
   if (typeof issue.id !== "string" || !issue.id || typeof issue.title !== "string") {
@@ -25,6 +67,9 @@ export function normalizeIssue(value: unknown): Issue {
   const dueDate = typeof issue.dueDate === "string" && issue.dueDate ? issue.dueDate : null;
   const estimate = typeof issue.estimate === "number" && Number.isFinite(issue.estimate) ? issue.estimate : null;
   const dependencies = relationshipEntries(issue);
+  const labelInfo = labels.map(normalizeLabel).filter((item): item is IssueLabel => item !== null);
+  const assignee = optionalRecord(issue.assignee);
+  const priorityValue = typeof issue.priority === "number" && Number.isInteger(issue.priority) && issue.priority >= 0 && issue.priority <= 4 ? issue.priority : null;
   return {
     id: issue.id,
     identifier: label(issue.identifier) || issue.id,
@@ -39,7 +84,15 @@ export function normalizeIssue(value: unknown): Issue {
     project: label(issue.project),
     description: label(issue.description),
     team: label(issue.team),
-    labels: labels.map(label).filter(Boolean),
+    labels: labels.map((item) => {
+      const normalized = normalizeLabel(item);
+      return normalized ? labelDisplay(normalized) : label(item);
+    }).filter(Boolean),
+    labelInfo,
+    customers: issueCustomers(issue),
+    assignee: assignee ? label(assignee.name) : "",
+    assigneeId: assignee && typeof assignee.id === "string" ? assignee.id : "",
+    priorityValue,
     updatedAt: label(issue.updatedAt),
     createdAt: label(issue.createdAt),
     blockingCount: dependencies.filter((relation) => relation.direction === "blocks").length,
@@ -166,6 +219,35 @@ export function ticketRelations(issueData: unknown, viewerId = ""): TicketRelati
   return { parent, subissues, related };
 }
 
+export function customerRequests(nodes: unknown[], source: "ticket" | "project"): CustomerRequest[] {
+  return nodes.flatMap((value) => {
+    const need = optionalRecord(value);
+    if (!need || typeof need.id !== "string" || !need.id) return [];
+    const customer = optionalRecord(need.customer);
+    const tier = optionalRecord(customer?.tier);
+    return [{
+      id: need.id,
+      customer: customer ? label(customer.name) : "",
+      customerId: customer && typeof customer.id === "string" ? customer.id : "",
+      customerUrl: customer ? label(customer.url) : "",
+      tier: tier ? label(tier.displayName) || label(tier.name) : "",
+      important: typeof need.priority === "number" && need.priority >= 1,
+      content: label(need.content ?? need.body),
+      url: label(need.url),
+      source,
+    }];
+  });
+}
+
+function customerBlock(requests: CustomerRequest[]): string {
+  if (!requests.length) return "";
+  return ["Customer requests:", ...requests.map((request) => {
+    const who = [request.customer || "Unknown customer", request.tier ? `(${request.tier})` : "", request.important ? "[important]" : "", request.source === "project" ? "[on the project]" : ""].filter(Boolean).join(" ");
+    const content = request.content.replace(/\s+/g, " ").trim();
+    return `- ${who}${content ? `: ${content.length > 280 ? `${content.slice(0, 280)}…` : content}` : ""}`;
+  })].join("\n");
+}
+
 function relationshipBlock(issueData: unknown): string {
   const list = relationships(issueData);
   if (!list.length) return "";
@@ -179,10 +261,10 @@ function snapshotIssue(context: string): unknown {
   } catch { return undefined; }
 }
 
-export function buildContext(issueData: unknown, comments: unknown, stateHistory: unknown[] = []): string {
+export function buildContext(issueData: unknown, comments: unknown, stateHistory: unknown[] = [], requests: CustomerRequest[] = []): string {
   // Preserve all returned fields: description, labels, links and relationships
   // should reach the agent without a lossy summary or silent truncation.
-  const context = JSON.stringify({ issue: issueData, comments, ...(stateHistory.length ? { stateHistory } : {}) }, null, 2);
+  const context = JSON.stringify({ issue: issueData, comments, ...(stateHistory.length ? { stateHistory } : {}), ...(requests.length ? { customerRequests: requests } : {}) }, null, 2);
   if (context.length > 200_000) {
     throw new Error("This ticket and its comments are too large to send in one prompt (200,000 characters maximum).");
   }
@@ -220,7 +302,8 @@ export function buildPrompt(detail: string | TicketDetail, instructions: string,
   const accessNote = linearAccess ? LINEAR_ACCESS_NOTE : NO_LINEAR_ACCESS_NOTE;
   const context = typeof detail === "string" ? detail : detail.context;
   const warnings = typeof detail === "string" ? [] : detail.warnings;
-  const blocks = [relationshipBlock(snapshotIssue(context)), statusChangesLine(context)].filter(Boolean).join("\n\n");
+  const requests = typeof detail === "string" ? [] : detail.customerRequests ?? [];
+  const blocks = [relationshipBlock(snapshotIssue(context)), statusChangesLine(context), customerBlock(requests)].filter(Boolean).join("\n\n");
   if (!template) {
     return [
       "Work on the Linear ticket in the JSON snapshot below, using the current workspace.",

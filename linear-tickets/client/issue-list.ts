@@ -19,7 +19,7 @@ export function filterIssues(issues: Issue[], query: string, status: string | nu
   const search = query.trim().toLowerCase();
   return issues.filter((issue) => (!status || issueStatus(issue) === status)
     && (dependency === "all" || (dependency === "blocking" ? issue.blockingCount > 0 : issue.blockedByCount > 0))
-    && [issue.identifier, issue.title, issue.project, issue.team, issue.status, ...issue.labels].join(" ").toLowerCase().includes(search))
+    && [issue.identifier, issue.title, issue.project, issue.team, issue.status, issue.assignee ?? "", ...issue.labels, ...(issue.customers ?? []).map((customer) => customer.name)].join(" ").toLowerCase().includes(search))
     .sort((a, b) => {
       if (field === "priority") {
         const left = priorityRank(a.priority), right = priorityRank(b.priority);

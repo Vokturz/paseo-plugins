@@ -1,8 +1,9 @@
 # Linear tickets
 
-A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you
-(filtered and searched server-side across your workspace), and starts an agent with the
-ticket details, comments and relationships in its first prompt. The conversation shows a
+A Paseo sidebar plugin that connects to Linear's GraphQL API, shows tickets assigned to you as a
+list or a status board (filtered and searched server-side across your workspace, including by
+label group and customer), and starts an agent with the ticket details, comments, relationships
+and customer requests in its first prompt. The conversation shows a
 Linear ticket card with status, priority, additional direction, and the launch-time access
 setting. Expand **Full instructions and context** to read the complete original message.
 
@@ -56,6 +57,35 @@ After an agent starts successfully, the plugin remembers that provider's model, 
 mode, and reasoning level on this host. The most recently used provider is restored the
 next time the launcher opens, and switching providers restores each provider's own choices.
 Choices that are no longer advertised by Paseo are safely ignored.
+
+## Layouts, filters and saved preferences
+
+The tickets assigned to you can be shown as a **List** or as a **Board**. The board has one
+column per workflow status, ordered the way work moves (triage, backlog, todo, in progress,
+review, done, canceled), and each column header shows its count. Cards show the identifier,
+priority, title, project, labels in their Linear colors, and customers. Selecting a card opens
+the ticket. If a column has tickets that are not loaded yet, it says so and offers **Load all
+tickets**.
+
+A row of quick label chips sits above the tickets. It holds the most common labels among the
+loaded tickets, plus any label filter that is active. Selecting a chip filters by that label.
+
+Under **Filters and sort**, tickets can also be filtered by any label, by a missing label group,
+and by customer. All filters run in Linear, so they cover every ticket and not only the loaded
+pages.
+
+- **Labels.** Label groups appear the way Linear's picker shows them (`Area / Core API`).
+  Labels from the same group are alternatives, and labels from different groups must all
+  match. For example, `Area / Core API` or `Area / Evals`, and `Bug / Reliability`. Labels are
+  matched by group and name, so a group defined in several teams filters as one.
+- **Missing a label from.** Shows tickets with no label from a group, such as tickets nobody
+  has given an Area yet.
+- **Customers.** Shows tickets with a customer request from specific customers, or from any
+  customer. The filter only appears when the workspace has customers.
+
+The layout, filters, status chip, dependency filter and sort order are saved on the host and
+restored the next time the surface opens. A refresh therefore keeps the same view. Status
+counts and the cached first page follow the active filters.
 
 Tickets load in pages of 50. By default they cover **open work only** — completed,
 canceled and duplicated states are hidden server-side; the **Settings** menu (gear in
@@ -124,8 +154,9 @@ returned links. Linked documents and attachments are not downloaded. If comments
 are unavailable, the preview and agent prompt say so. Context over 200,000 characters
 is rejected rather than silently truncated.
 
-The ticket preview shows the ticket's project, team, labels, priority, dates (including
-due date and estimate when set), a status-history line, and a **Related tickets** section.
+The ticket preview shows the ticket's project, team, assignee, labels, priority, dates
+(including due date and estimate when set), a status-history line, its **Customer requests**,
+and a **Related tickets** section.
 That section includes the parent, subissues, blockers, blocked tickets, duplicates, and
 general relations returned by Linear—even when those tickets are unassigned or assigned
 to somebody else. It stays collapsed behind a **Show related tickets** toggle until needed;
@@ -142,14 +173,36 @@ agent's workspace or added to its prompt. Provider badges, available modes, and 
 levels are read from the configured Paseo provider catalog; unavailable capabilities stay
 out of the form.
 
-## Project mappings
+## Customer requests
 
-Opening a ticket preselects where its agent runs. A Linear project (or, for tickets without
-one, the team) maps to a Paseo project and, for Git projects, a base branch. Starting an agent
-remembers the choice for that Linear project; until a mapping exists, a Paseo project whose
-name equals the Linear project name is preselected when exactly one matches. A choice you make
-by hand is never overridden. **Settings → Project mappings** lists the saved mappings and can
-forget them. Mappings are stored per host in `settings.json`.
+Customer requests (Linear's customer needs) appear in the preview. Each one shows the customer,
+its tier, whether it is marked important, and a link to the source. Requests attached to the
+ticket's project but not to any ticket are shown too, marked "On the project". The agent
+receives the same requests: a compact **Customer requests** block in the prompt, and
+`customerRequests` in the JSON snapshot. If the workspace does not use customers, nothing is
+shown.
+
+## Repository mappings
+
+Opening a ticket preselects where its agent runs. The plugin checks, in this order:
+
+1. **Labels.** In **Settings → Repository mappings**, pick a label group and map each label to
+   a Paseo project and, for Git projects, a base branch. This suits workspaces where a label
+   names the part of the system a ticket touches. A ticket uses its label mapping when all of
+   its mapped labels point at the same project. If they disagree, the plugin says so and falls
+   through to the next kind.
+2. **Linear project.** Remembered when you start an agent.
+3. **Team.** Remembered when you start an agent on a ticket that has no project.
+
+4. **Name.** A Paseo project whose name matches the Linear project name, but only when exactly
+   one matches.
+5. **Latest used.** The project and base branch of your most recent launch.
+
+So without a manual label mapping, a ticket opens in the repository last used for its Linear
+project or team, and otherwise in the repository you used last. A choice you make by hand is never overridden.
+A launch decided by a label mapping does not also save a project mapping. The same view lists
+the remembered project and team mappings and can forget any of them. Mappings are stored per
+host in `settings.json`.
 
 ## Agent access to Linear
 
@@ -186,6 +239,8 @@ buttons) holds the plugin's per-host settings:
   (off by default; see below).
 - **Tickets shown** — include completed, canceled and duplicated tickets in the list
   and the status counts (off by default, keeping the list focused on open work).
+- **Repository mappings**: map labels to Paseo projects, and review the remembered project
+  and team mappings (see above).
 - **Default prompt** — replace the built-in launch prompt with a template (below).
 
 The last successful model, mode, and reasoning choices are stored in the same per-host
@@ -256,7 +311,8 @@ start again. This retry cache does not survive a plugin or daemon restart.
 ## Validation
 
 `npm run typecheck` checks both entrypoints against Paseo's SDK. `npm test` covers
-GraphQL response parsing, pagination, context preservation, prompt template rendering
+GraphQL response parsing, pagination, label-group and customer filters, the board's columns,
+label, recent and repository mappings, saved list views, context preservation, prompt template rendering
 and validation, credential and settings persistence, ticket retrieval, state-transition
 resolution and failure handling, and agent creation/retries with mocked Linear and Paseo
 calls.

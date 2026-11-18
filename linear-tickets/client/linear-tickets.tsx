@@ -3,7 +3,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, type Issue, type RelatedTicket, type TicketDetail } from "../shared/contracts";
+import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, customersRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, getSettingsRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, workspaceLabelsRpc, DEFAULT_LIST_FILTER, type Issue, type ListFilter, type ListView, type RelatedTicket, type TicketDetail } from "../shared/contracts";
 import { filterIssues, formatIssueDate, formatPriority, formatRelativeDate, hasPriority, issueStatus, statusChangesText, statusCounts, type DependencyFilter, type SortDirection, type SortField } from "./issue-list";
 
 import { ChoicePicker } from "./choice-picker";
@@ -13,7 +13,12 @@ import { tokensFor } from "./design";
 import { openExternalUrl } from "./open-link";
 import { MarkdownPreview } from "./markdown-preview";
 import { restoreLaunchSelection, type LaunchPreference } from "./launch-preferences";
-import { mappedBaseBranch, mappingKey, mappingLabel, resolveMapping, type MappingSource, type ProjectMapping } from "../shared/mapping";
+import { labelMappingConflict, mappedBaseBranch, mappingKey, mappingLabel, resolveMapping, type MappingSource, type ProjectMapping } from "../shared/mapping";
+import { activeFilterCount, issueLabelChips, labelRefDisplay, labelRefKey, quickLabels, toggleLabel, type WorkspaceLabel } from "./label-tools";
+import { TicketBoard } from "./board";
+import { ListFilters, type CustomerChoice } from "./list-filters";
+import { CustomerRequests } from "./customer-requests";
+import { MappingView } from "./mapping-view";
 
 type ThinkingOption = { id: string; label: string; description?: string; isDefault?: boolean };
 type ModelChoice = { id: string; label: string; provider: string; description?: string; thinkingOptions: ThinkingOption[]; defaultThinkingOptionId?: string };
@@ -39,6 +44,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const searchAll = useRpc(searchIssuesRpc);
   const getTemplate = useRpc(getDefaultPromptRpc), saveTemplate = useRpc(setDefaultPromptRpc);
   const getSettings = useRpc(getSettingsRpc), saveSettings = useRpc(setSettingsRpc);
+  const getLabels = useRpc(workspaceLabelsRpc), getCustomers = useRpc(customersRpc);
+  const [filter, setFilter] = useState<ListFilter>(DEFAULT_LIST_FILTER);
+  const filterRef = useRef<ListFilter>(DEFAULT_LIST_FILTER);
+  const [workspaceLabels, setWorkspaceLabels] = useState<WorkspaceLabel[]>([]);
+  const [labelsLoading, setLabelsLoading] = useState(false);
+  const [labelsError, setLabelsError] = useState<string | null>(null);
+  const [labelsVersion, setLabelsVersion] = useState(0);
+  const [customers, setCustomers] = useState<CustomerChoice[]>([]);
+  const [customersAvailable, setCustomersAvailable] = useState(false);
+  // The list view (sort and filters) is saved once the saved one has been restored.
+  const listViewRestored = useRef(false);
   const [markInProgress, setMarkInProgress] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templateText, setTemplateText] = useState("");
@@ -60,7 +76,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [showClosed, setShowClosed] = useState(false);
   const [dateField, setDateField] = useState<SortField>("updatedAt");
   const [dateDirection, setDateDirection] = useState<SortDirection>("newest");
-  const [view, setView] = useState<"list" | "settings">("list");
+  const [layoutMode, setLayoutMode] = useState<"list" | "board">("list");
+  const [view, setView] = useState<"list" | "settings" | "mappings">("list");
   const [manageConnection, setManageConnection] = useState(false);
   const [selected, setSelected] = useState<Issue | null>(null);
   const [detail, setDetail] = useState<TicketDetail | null>(null);
@@ -89,7 +106,9 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [projectMappings, setProjectMappings] = useState<Record<string, ProjectMapping>>({});
   const [agentLinearAccess, setAgentLinearAccess] = useState(true);
-  const [mappingReason, setMappingReason] = useState<"saved" | "name" | null>(null);
+  const [mappingReason, setMappingReason] = useState<"label" | "saved" | "name" | "recent" | null>(null);
+  const [lastProject, setLastProject] = useState<{ projectId: string; baseBranch?: string } | null>(null);
+  const [mappingLabels, setMappingLabels] = useState<string[]>([]);
   // The ticket whose mapping was applied or overridden by hand; the branch waits for the list.
   const mappedFor = useRef<string | null>(null);
   const [optionsLoading, setOptionsLoading] = useState(true);
@@ -117,12 +136,13 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     finally { busyRef.current = false; setBusy(null); }
   };
 
-  const loadIssues = useCallback(async (next?: string, filter?: { status: string | null; dependency?: DependencyFilter }) => {
-    const f = filter ?? { status: statusRef.current, dependency: dependencyRef.current };
+  const loadIssues = useCallback(async (next?: string, selection?: { status: string | null; dependency?: DependencyFilter; filter?: ListFilter }) => {
+    const f = selection ?? { status: statusRef.current, dependency: dependencyRef.current };
     const page = await getIssues({
       ...(next ? { cursor: next } : {}),
       ...(f.status ? { stateNames: [f.status] } : {}),
       ...(f.dependency && f.dependency !== "all" ? { relation: f.dependency } : {}),
+      filter: f.filter ?? filterRef.current,
     });
     if (next && page.nextCursor === next) throw new Error("Linear repeated a page. Refresh the ticket list to continue.");
     setIssues((previous) => [...new Map((next ? [...previous, ...page.issues] : page.issues).map((issue) => [issue.id, issue])).values()]);
@@ -132,7 +152,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   }, [getIssues]);
 
   const refreshCounts = useCallback(async () => {
-    try { setCounts(await getIssuesCount({})); } catch { /* counts are non-critical; the list still loads without them */ }
+    try { setCounts(await getIssuesCount({ filter: filterRef.current })); } catch { setCounts(null); /* counts are non-critical; the list still loads without them */ }
   }, [getIssuesCount]);
 
   const loadAllIssues = async () => {
@@ -178,22 +198,66 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     finally { setOptionsLoading(false); }
   }, [paseo]);
 
+  // Settings come first: the saved sort and filters decide which tickets are requested.
+  const applySettings = useCallback((value: Awaited<ReturnType<typeof getSettings>>) => {
+    setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed);
+    setLaunchPreferences(value.launchPreferences); setLastProvider(value.lastProvider);
+    setProjectMappings(value.projectMappings); setAgentLinearAccess(value.agentLinearAccess);
+    setLastProject(value.lastProject);
+    const saved = value.listView;
+    if (saved) {
+      setLayoutMode(saved.layout); setDateField(saved.sortField); setDateDirection(saved.sortDirection);
+      statusRef.current = saved.status; setStatus(saved.status);
+      dependencyRef.current = saved.dependency; setDependency(saved.dependency);
+      filterRef.current = saved.filter; setFilter(saved.filter);
+    }
+  }, []);
+
   useEffect(() => {
     void run("Loading connection", async () => {
+      const settings = await getSettings({}).catch(() => null);
+      if (settings) applySettings(settings);
+      listViewRestored.current = true;
+      setSettingsLoaded(true);
       const status = await getStatus({}); setConnection(status);
       if (status.connected) {
-        const cached = await getCachedOverview({}).catch(() => null);
+        const filtered = Boolean(statusRef.current || dependencyRef.current !== "all");
+        const cached = filtered ? null : await getCachedOverview({ filter: filterRef.current }).catch(() => null);
         if (cached) {
           setIssues(cached.issues); setCursor(cached.nextCursor); setCounts(cached.counts ?? null); setLastUpdatedAt(cached.updatedAt);
         }
         const cachedTime = cached ? Date.parse(cached.updatedAt) : Number.NaN;
         if (!Number.isFinite(cachedTime) || Date.now() - cachedTime >= CACHE_MAX_AGE_MS) {
-          await loadIssues(undefined, { status: null }); void refreshCounts();
+          await loadIssues(); void refreshCounts();
         } else if (!cached?.counts) void refreshCounts();
       }
     });
     void loadOptions();
-  }, [getStatus, getCachedOverview, loadIssues, loadOptions, refreshCounts]);
+  }, [getStatus, getSettings, applySettings, getCachedOverview, loadIssues, loadOptions, refreshCounts]);
+
+  // Remember the sort and filters on this host whenever they change.
+  const listView: ListView = useMemo(() => ({ layout: layoutMode, sortField: dateField, sortDirection: dateDirection, status, dependency, filter }), [layoutMode, dateField, dateDirection, status, dependency, filter]);
+  const savedListView = useRef<string | null>(null);
+  useEffect(() => {
+    if (!listViewRestored.current) return;
+    const serialized = JSON.stringify(listView);
+    if (savedListView.current === null) { savedListView.current = serialized; return; }
+    if (savedListView.current === serialized) return;
+    savedListView.current = serialized;
+    const handle = setTimeout(() => { void saveSettings({ listView }).catch(() => {}); }, 400);
+    return () => clearTimeout(handle);
+  }, [listView, saveSettings]);
+
+  // Workspace labels and customers feed the filters and the label mappings.
+  useEffect(() => {
+    if (!connection?.connected) return;
+    let cancelled = false;
+    setLabelsLoading(true); setLabelsError(null);
+    void getLabels({ refresh: labelsVersion > 0 }).then((value) => { if (!cancelled) setWorkspaceLabels(value.labels); },
+      (error) => { if (!cancelled) setLabelsError(message(error)); }).finally(() => { if (!cancelled) setLabelsLoading(false); });
+    void getCustomers({}).then((value) => { if (!cancelled) { setCustomers(value.customers); setCustomersAvailable(value.available); } }, () => {});
+    return () => { cancelled = true; };
+  }, [connection?.connected, getLabels, getCustomers, labelsVersion]);
 
   useEffect(() => {
     void getTemplate({}).then((result) => {
@@ -203,21 +267,22 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     }, () => { setTemplateOpen(false); });
   }, [getTemplate]);
 
-  useEffect(() => {
-    void getSettings({}).then((value) => {
-      setMarkInProgress(value.markInProgress); setShowClosed(value.showClosed);
-      setLaunchPreferences(value.launchPreferences); setLastProvider(value.lastProvider);
-      setProjectMappings(value.projectMappings); setAgentLinearAccess(value.agentLinearAccess);
-    }, () => {}).finally(() => setSettingsLoaded(true));
-  }, [getSettings]);
-
+  // A reload of the same ticket (Retry) keeps the current detail on screen.
+  const detailFor = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setDetail(null); setDetailError(null); setShowContext(false); setShowRelatedTickets(false); setContextCopied(false);
+    setDetailError(null);
+    if (detailFor.current !== (selected?.id ?? null)) {
+      detailFor.current = selected?.id ?? null;
+      setDetail(null); setShowContext(false); setShowRelatedTickets(false); setContextCopied(false);
+    }
     if (!selected) { setDetailLoading(false); return; }
     setDetailLoading(true);
     void getDetail({ id: selected.id }).then((value) => {
-      if (!cancelled) setDetail(value);
+      if (cancelled) return;
+      setDetail(value);
+      // Fresher fields (labels, status) show up in the list without a full refresh.
+      setIssues((previous) => previous.map((issue) => issue.id === value.issue.id ? { ...issue, ...value.issue } : issue));
     }, (error) => { if (!cancelled) setDetailError(message(error)); })
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
@@ -292,17 +357,18 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     setWantedBranch(null);
     setBaseBranch(mappedBaseBranch(wantedBranch.branch, branches, defaultBranch));
   }, [wantedBranch, branchesLoading, branchesFor, projectId, branches, defaultBranch]);
-  const mappingSource: MappingSource | null = detail ? { projectId: detail.projectId, projectName: detail.issue.project, teamId: detail.teamId, teamName: detail.issue.team } : null;
+  const mappingSource: MappingSource | null = detail ? { projectId: detail.projectId, projectName: detail.issue.project, teamId: detail.teamId, teamName: detail.issue.team, labels: detail.issue.labelInfo ?? [] } : null;
   useEffect(() => {
     if (!detail || !mappingSource || detail.issue.id !== selected?.id || !settingsLoaded || optionsLoading || mappedFor.current === selected.id) return;
     mappedFor.current = selected.id;
-    const resolved = resolveMapping(mappingSource, projectMappings, projects);
+    const resolved = resolveMapping(mappingSource, projectMappings, projects, lastProject);
     setMappingReason(resolved?.reason ?? null);
+    setMappingLabels(resolved?.reason === "label" ? resolved.labels ?? [] : labelMappingConflict(mappingSource, projectMappings, projects).flatMap((target) => target.labels));
     setWantedBranch(resolved?.baseBranch ? { branch: resolved.baseBranch } : {});
     if (!resolved || resolved.projectId === projectId) return;
     setProjectId(resolved.projectId); setBaseBranch(""); setBranches([]);
     // mappingSource is derived from detail; the effect runs once per opened ticket.
-  }, [detail, selected, settingsLoaded, optionsLoading, projects, projectMappings]);
+  }, [detail, selected, settingsLoaded, optionsLoading, projects, projectMappings, lastProject]);
   const providerGroups = [...new Set(models.map((model) => model.provider))];
   const selectedModel = models.find((model) => model.id === provider);
   const activeModes = modes[providerGroup] ?? [];
@@ -360,6 +426,15 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     statusRef.current = name; setStatus(name); setIssues([]); setCursor(null);
     void run("Loading tickets", async () => { await loadIssues(undefined, { status: name, dependency: dependencyRef.current }); });
   };
+  // Filters are server-side: the list, counts and cache all follow them.
+  const changeFilter = (next: ListFilter) => {
+    filterRef.current = next; setFilter(next); setIssues([]); setCursor(null); setCounts(null);
+    void run("Loading tickets", async () => { await loadIssues(); void refreshCounts(); });
+  };
+  const clearFilters = () => {
+    dependencyRef.current = "all"; setDependency("all"); statusRef.current = null; setStatus(null); setQuery("");
+    changeFilter(DEFAULT_LIST_FILTER);
+  };
   const changeDependency = (value: DependencyFilter) => {
     dependencyRef.current = value; setDependency(value); setIssues([]); setCursor(null);
     void run("Loading tickets", async () => { await loadIssues(undefined, { status: statusRef.current, dependency: value }); });
@@ -384,9 +459,12 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
     setLaunchPreferences((previous) => ({ ...previous, [providerGroup]: launchPreference }));
     setLastProvider(providerGroup);
     // One patch per launch: the model choice and the project mapping are saved together.
-    const key = mappingSource ? mappingKey(mappingSource) : null;
+    // A label mapping already decides this ticket; remembering its project too would only add noise.
+    const key = mappingSource && mappingReason !== "label" ? mappingKey(mappingSource) : null;
     const projectMapping = key && mappingSource ? { key, projectId, label: mappingLabel(mappingSource), ...(project?.projectKind === "git" && baseBranch ? { baseBranch } : {}) } : undefined;
-    void saveSettings({ launchPreference: { provider: providerGroup, ...launchPreference }, ...(projectMapping ? { projectMapping } : {}) })
+    const recent = { projectId, ...(project?.projectKind === "git" && baseBranch ? { baseBranch } : {}) };
+    setLastProject(recent);
+    void saveSettings({ launchPreference: { provider: providerGroup, ...launchPreference }, lastProject: recent, ...(projectMapping ? { projectMapping } : {}) })
       .then((saved) => setProjectMappings(saved.projectMappings), () => {
         setOptionsError("Agent started, but its model and project choices could not be remembered.");
       });
@@ -403,17 +481,20 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
   </View> : null;
 
   const metaLine = (issue: Issue) => {
-    const chips = issue.labels.slice(0, compact ? 1 : 2);
-    const extra = issue.labels.length - chips.length;
+    const allChips = issueLabelChips(issue);
+    const chips = allChips.slice(0, compact ? 2 : 3);
+    const extra = allChips.length - chips.length;
+    const customerNames = (issue.customers ?? []).map((customer) => customer.name);
     const places = [issue.project, issue.team].filter(Boolean).join(" · ");
     const due = issue.dueDate ? `Due ${formatIssueDate(issue.dueDate)}` : "";
     const estimate = issue.estimate ? `${issue.estimate} pts` : "";
     const dependencies = [issue.blockingCount ? `Blocks ${issue.blockingCount}` : "", issue.blockedByCount ? `Blocked by ${issue.blockedByCount}` : ""].filter(Boolean);
-    if (!places && !chips.length && !extra && !due && !estimate && !dependencies.length) return null;
+    if (!places && !chips.length && !extra && !due && !estimate && !dependencies.length && !customerNames.length) return null;
     return <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 }}>
       {!!places && <Text numberOfLines={1} style={t.muted}>{places}</Text>}
-      {chips.map((label) => <LabelChip key={label} label={label} t={t} />)}
+      {chips.map((chip) => <LabelChip key={chip.label} label={chip.label} color={chip.color} t={t} />)}
       {extra > 0 && <Text style={t.muted}>+{extra}</Text>}
+      {!!customerNames.length && <LabelChip label={customerNames.length > 2 ? `${customerNames.slice(0, 2).join(", ")} +${customerNames.length - 2}` : customerNames.join(", ")} icon="Building2" t={t} />}
       {due && <Text style={{ ...t.muted, color: colors.accent, fontSize: 11 }}>{due}</Text>}
       {estimate && <Text style={{ ...t.muted, fontSize: 11 }}>{estimate}</Text>}
       {dependencies.map((item) => <View key={item} style={{ backgroundColor: colors.surface2, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 3 }}><Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>{item}</Text></View>)}
@@ -468,7 +549,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         const next = !showClosed;
         setShowClosed(next);
         setShowClosed((await saveSettings({ showClosed: next })).showClosed);
-        setStatus(null); setIssues([]); setCursor(null);
+        statusRef.current = null; setStatus(null); setIssues([]); setCursor(null);
         await loadIssues(undefined, { status: null });
         void refreshCounts();
       })} />
@@ -483,18 +564,15 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
       })} />
     <Text style={t.muted}>On gives each new agent linear_ticket tools that act only on the ticket it started from, using this host's Linear key; canceling or marking duplicate stays with people. It needs a key with write access. Existing agents keep what they started with.</Text>
     <Divider t={t} spaced />
-    <FieldLabel title="Project mappings" icon="Folder" hint="Linear project → Paseo project" t={t} />
-    {Object.keys(projectMappings).length ? Object.entries(projectMappings).sort((a, b) => a[1].label.localeCompare(b[1].label)).map(([key, mapping]) => {
-      const target = projects.find((item) => item.projectId === mapping.projectId);
-      const targetName = target ? target.projectCustomName || target.projectDisplayName : "Project no longer in Paseo";
-      const branch = mapping.baseBranch ? ` · ${mapping.baseBranch.replace(/^refs\/(heads|remotes)\//, "")}` : "";
-      return <View key={key} style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <Text style={{ ...t.strong, flex: 1, minWidth: 160 }} numberOfLines={1}>{mapping.label} → {targetName}{branch}</Text>
-        <Button title="Forget" icon="X" size="sm" onPress={() => void run("Saving setting", async () => {
-          setProjectMappings((await saveSettings({ forgetProjectMapping: key })).projectMappings);
-        })} />
-      </View>;
-    }) : <Text style={t.muted}>None yet. Starting an agent from a ticket remembers its project and base branch for that Linear project; until then a Paseo project with the same name is preselected.</Text>}
+    <FieldLabel title="Repository mappings" icon="FolderGit2" hint="label, Linear project or team → Paseo project" t={t} />
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+      <Button title="Manage repository mappings" icon="FolderGit2" size="sm" onPress={() => setView("mappings")} />
+      <Text style={{ ...t.muted, flex: 1, minWidth: 180 }}>{(() => {
+        const labelCount = Object.keys(projectMappings).filter((key) => key.startsWith("label:")).length;
+        const otherCount = Object.keys(projectMappings).length - labelCount;
+        return labelCount || otherCount ? `${labelCount} label mapping${labelCount === 1 ? "" : "s"}, ${otherCount} remembered project or team mapping${otherCount === 1 ? "" : "s"}.` : "None yet. Map labels to repositories, or start an agent to remember a Linear project.";
+      })()}</Text>
+    </View>
     <Divider t={t} spaced />
     <FieldLabel title="Default prompt" icon="PenLine" hint="the system prompt used when you start an agent" t={t} />
     {templateOpen ? <View style={{ gap: 8 }}>
@@ -575,11 +653,15 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           <Text style={t.muted}>{connection.source === "environment" ? "Key supplied by the daemon environment (LINEAR_API_KEY)." : "Key saved on this Paseo host."}</Text>
         </View>
         {connection.source !== "environment" && <Button title="Disconnect" icon="Unplug" tone="danger" onPress={() => void run("Disconnecting", async () => {
-          setConnection(await disconnect({})); setIssues([]); setCounts(null); setLastUpdatedAt(null); setSearchResults([]); setSearchError(null); setSelected(null); setAgent(null); setCursor(null); statusRef.current = null; setStatus(null); setQuery("");
+          setConnection(await disconnect({})); setIssues([]); setCounts(null); setLastUpdatedAt(null); setSearchResults([]); setSearchError(null); setSelected(null); setAgent(null); setCursor(null); statusRef.current = null; setStatus(null); setQuery(""); setWorkspaceLabels([]); setCustomers([]); setCustomersAvailable(false);
         })} />}
       </View>}
 
-      {view === "settings" ? settingsCard : selected && current ? <>
+      {view === "mappings" ? <MappingView t={t} projects={projects} labels={workspaceLabels} labelsLoading={labelsLoading} labelsError={labelsError} onRetryLabels={() => setLabelsVersion((value) => value + 1)}
+        mappings={projectMappings} disabled={Boolean(busy)} onBack={() => setView("settings")}
+        onSave={async (key, mapping) => { setProjectMappings((await saveSettings({ projectMapping: { key, ...mapping } })).projectMappings); }}
+        onForget={async (key) => { setProjectMappings((await saveSettings({ forgetProjectMapping: key })).projectMappings); }} />
+      : view === "settings" ? settingsCard : selected && current ? <>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           <Button title="Tickets" icon="ArrowLeft" onPress={() => { setSelected(null); setAgent(null); setError(null); }} />
           {/^https:\/\/linear\.app\//.test(selected.url) && <Button title="Open in Linear" icon="ExternalLink" onPress={() => void run("Opening Linear", async () => { await openExternalUrl(selected.url, { platform: layout.platform, linking: Linking }); })} />}
@@ -601,7 +683,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 14, backgroundColor: colors.surface0, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14 }}>
               <MetaItem icon="Folder" label="Project" value={current.project || "—"} t={t} />
               <MetaItem icon="Users" label="Team" value={current.team || "—"} t={t} />
-              <MetaItem icon="Tag" label="Labels" chips={current.labels} t={t} />
+              <MetaItem icon="Tag" label="Labels" chips={issueLabelChips(current).map(({ label, color }) => ({ label, color }))} t={t} />
+              {current.assignee !== undefined && <MetaItem icon="UserRound" label="Assignee" value={current.assignee || "Unassigned"} t={t} />}
               <MetaItem icon="Calendar" label="Created" value={formatIssueDate(current.createdAt)} t={t} />
               <MetaItem icon="Clock" label="Updated" value={formatRelativeDate(current.updatedAt)} t={t} />
               {current.dueDate && <MetaItem icon="CalendarClock" label="Due" value={formatIssueDate(current.dueDate)} t={t} />}
@@ -612,6 +695,8 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               <Icon name="History" size={13} color={colors.foregroundMuted} />
               <Text style={{ ...t.muted, fontSize: 12 }}>Status history: {statusChangesText(detail.context)}</Text>
             </View>}
+
+            {detail && <CustomerRequests t={t} requests={detail.customerRequests ?? []} platform={layout.platform} />}
 
             {!!relatedTickets.length && <View style={{ gap: 10 }}>
               <Button title={`${showRelatedTickets ? "Hide" : "Show"} related tickets · ${relatedTickets.length}`} icon={showRelatedTickets ? "ChevronUp" : "ChevronDown"} chosen={showRelatedTickets} stretch onPress={() => setShowRelatedTickets(!showRelatedTickets)} />
@@ -645,7 +730,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
               <FieldLabel title="Description" icon="FileText" t={t} />
               {detailLoading && <ActivityIndicator color={colors.accent} size="small" />}
             </View>
-            {detailLoading && <View style={{ gap: 9 }}><Skeleton t={t} width="100%" height={12} /><Skeleton t={t} width="92%" height={12} /><Skeleton t={t} width="64%" height={12} /></View>}
+            {detailLoading && !detail && <View style={{ gap: 9 }}><Skeleton t={t} width="100%" height={12} /><Skeleton t={t} width="92%" height={12} /><Skeleton t={t} width="64%" height={12} /></View>}
             {detailError && <Callout t={t} tone="danger" message={detailError} action={<Button title="Retry" icon="RefreshCw" size="sm" onPress={() => setDetailVersion((value) => value + 1)} />} />}
             {detail && <>
               <MarkdownPreview markdown={detail.issue.description || "No description provided."} t={t} platform={layout.platform} />
@@ -675,7 +760,10 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <FieldLabel title="Workspace" icon="Folder" hint="where the agent runs" t={t} />
             <ChoicePicker label="Projects" icon="Folder" placeholder="Choose a project" options={projects.map((item) => ({ id: item.projectId, label: item.projectCustomName || item.projectDisplayName, description: item.projectRootPath }))}
               value={projectId} onChange={(id) => { mappedFor.current = selected?.id ?? null; setWantedBranch(null); setMappingReason(null); if (id !== projectId) { setProjectId(id); setBaseBranch(""); setBranches([]); } }} t={t} disabled={Boolean(busy) || optionsLoading} />
-            {mappingReason && project && <Text style={t.muted}>{mappingReason === "saved" ? `Remembered for ${mappingSource ? mappingLabel(mappingSource) : "this Linear project"}.` : "Matched by the Linear project name."} Starting an agent remembers the project you choose.</Text>}
+            {mappingReason && project && <Text style={t.muted}>{mappingReason === "label" ? `Mapped from the label ${mappingLabels.join(", ")}. Change it under Settings → Repository mappings.`
+              : mappingReason === "recent" ? "The project you used last. Map this ticket's labels under Settings → Repository mappings to choose per label."
+                : `${mappingReason === "saved" ? `Last used for ${mappingSource ? mappingLabel(mappingSource) : "this Linear project"}.` : "Matched by the Linear project name."} Starting an agent remembers the project you choose.`}</Text>}
+            {mappingReason !== "label" && mappingLabels.length > 1 && <Text style={t.muted}>Labels {mappingLabels.join(", ")} map to different projects, so none was preselected from them.</Text>}
             {!optionsLoading && !projects.length && <Callout t={t} tone="info" message="Open a project in Paseo, then reload the choices." />}
             {project?.projectKind === "git" && <>
               <FieldLabel title="Base branch" icon="GitBranch" hint="new worktree starts here" t={t} />
@@ -749,13 +837,33 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
             <TextInput accessibilityLabel="Search tickets" value={query} onChangeText={setQuery} placeholder="Search loaded tickets — and all of Linear…" placeholderTextColor={colors.foregroundMuted} style={{ color: colors.foreground, paddingVertical: 12, fontSize: 14, flex: 1, minWidth: 0 }} />
             {!!query && <Pressable accessibilityRole="button" accessibilityLabel="Clear search" style={({ pressed }) => ({ minWidth: t.touchTarget, minHeight: t.touchTarget, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.6 : 1 })} onPress={() => setQuery("")}><Icon name="X" size={15} color={colors.foregroundMuted} /></Pressable>}
           </View>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <Segmented t={t} label="Layout" value={layoutMode} disabled={Boolean(busy)} onChange={(value) => {
+              setLayoutMode(value);
+              // Columns already split tickets by status; a status chip would leave a single column.
+              if (value === "board" && status) changeStatus(null);
+            }} options={[{ value: "list" as const, label: "List", icon: "List" }, { value: "board" as const, label: "Board", icon: "Columns3" }]} />
+          </View>
+          {(() => {
+            const quick = quickLabels(issues, filter.labels);
+            return quick.length ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+              {quick.map(({ ref, color }) => {
+                const chosen = filter.labels.some((item) => labelRefKey(item) === labelRefKey(ref));
+                return <Button key={labelRefKey(ref)} size="sm" title={labelRefDisplay(ref)} chosen={chosen}
+                  leading={<View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color ?? colors.accent }} />}
+                  onPress={() => changeFilter(toggleLabel(filter, ref))} />;
+              })}
+            </View> : null;
+          })()}
+          {layoutMode === "list" && <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <FieldLabel title="Status" icon="ListFilter" t={t} />
             <Button size="sm" title={`All · ${counts ? (counts.complete ? counts.total : `${counts.total}+`) : issues.length}`} chosen={status === null} onPress={() => changeStatus(null)} />
             {statuses.map(([name, count]) => <Button key={name} size="sm" title={`${name} · ${count}`} chosen={status === name} leading={<StatusMark status={name} statusType={statusTypeFor(name)} t={t} />}
               onPress={() => changeStatus(status === name ? null : name)} />)}
-          </View>
-          <Disclosure title={`Filters and sort${dependency !== "all" ? " · dependency filter active" : ""}`} t={t}>
+          </View>}
+          <Disclosure title={`Filters and sort${activeFilterCount(filter) + (dependency !== "all" ? 1 : 0) ? ` · ${activeFilterCount(filter) + (dependency !== "all" ? 1 : 0)} active` : ""}`} t={t}>
+            <ListFilters t={t} filter={filter} onChange={changeFilter} labels={workspaceLabels} labelsError={labelsError} onRetryLabels={() => setLabelsVersion((value) => value + 1)}
+              customers={customers} customersAvailable={customersAvailable} disabled={Boolean(busy)} />
             <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
               <FieldLabel title="Dependencies" icon="GitBranch" t={t} />
               <Button size="sm" title="All" chosen={dependency === "all"} onPress={() => changeDependency("all")} />
@@ -770,7 +878,7 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
                 options={[{ value: "newest" as SortDirection, label: dateField === "dueDate" ? "Latest" : dateField === "priority" ? "Highest" : "Newest", icon: "ArrowDown" }, { value: "oldest" as SortDirection, label: dateField === "dueDate" ? "Soonest" : dateField === "priority" ? "Lowest" : "Oldest", icon: "ArrowUp" }]} />
             </View>
           </Disclosure>
-          {!!(status || query || dependency !== "all") && <Button size="sm" title="Clear filters" icon="X" onPress={() => { dependencyRef.current = "all"; setDependency("all"); changeStatus(null); setQuery(""); }} />}
+          {!!(status || query || dependency !== "all" || activeFilterCount(filter)) && <Button size="sm" title="Clear filters" icon="X" onPress={clearFilters} />}
         </View>
 
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
@@ -779,10 +887,17 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
         </View>
 
         {!busy && !visible.length && <EmptyState t={t} icon={issues.length ? "Search" : "CircleCheck"} title={issues.length ? "No matching tickets" : "You’re all caught up"}
-          description={issues.length ? "Try another status or a different search term." : showClosed ? "Assigned tickets will appear here as soon as Linear has them." : "No open tickets are assigned to you right now. Enable the closed-states setting to also see finished work."}
-          action={!!(status || query || dependency !== "all") ? <Button title="Clear filters" icon="X" onPress={() => { dependencyRef.current = "all"; setDependency("all"); changeStatus(null); setQuery(""); }} /> : undefined} />}
+          description={issues.length ? "Try another status or a different search term."
+            : activeFilterCount(filter) || status || dependency !== "all" ? "No tickets match these filters."
+              : showClosed ? "Assigned tickets will appear here as soon as Linear has them." : "No open tickets are assigned to you right now. Enable the closed-states setting to also see finished work."}
+          action={!!(status || query || dependency !== "all" || activeFilterCount(filter)) ? <Button title="Clear filters" icon="X" onPress={clearFilters} /> : undefined} />}
 
-        {(!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+        {layoutMode === "board" && !!visible.length && <TicketBoard t={t} issues={visible} disabled={Boolean(busy)} onOpen={choose}
+          // Server counts cover every assignment; with a local search they would overstate the columns.
+          countsByName={query.trim() ? null : counts?.byName ?? null}
+          canLoadMore={Boolean(cursor)} onLoadAll={() => void run("Loading all tickets", loadAllIssues)} />}
+
+        {layoutMode === "list" && (!!visible.length || ticketsLoading) && <View style={{ backgroundColor: colors.surface1, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
           {!compact && <View style={{ flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 16, paddingVertical: 11, backgroundColor: colors.surface2 }}>
             <View style={{ width: 20 }} />
             <Text style={{ ...t.eyebrow, width: 82 }}>Issue</Text>
@@ -801,8 +916,16 @@ export function LinearTicketsSurface({ theme, layout, navigation }: PluginSurfac
           {visible.map((issue, index) => renderIssueRow(issue, index))}
         </View>}
 
+        {layoutMode === "board" && ticketsLoading && !visible.length && <View style={{ flexDirection: "row", gap: 14 }}>
+          {[0, 1, 2].map((column) => <View key={column} style={{ width: compact ? 272 : 304, gap: 10 }}>
+            <Skeleton t={t} width={120} height={14} />
+            <Skeleton t={t} width="100%" height={96} radius={12} />
+            <Skeleton t={t} width="100%" height={96} radius={12} />
+          </View>)}
+        </View>}
+
         {cursor && <View style={{ ...t.card, alignItems: "center", gap: 10 }}>
-          <Text style={{ ...t.muted, textAlign: "center" }}>Search and sorting apply to loaded tickets. Load all to include every assignment.</Text>
+          <Text style={{ ...t.muted, textAlign: "center" }}>Search and sorting apply to loaded tickets. Load all to include every ticket in this view.</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
             <Button title="Load more" icon="ChevronDown" onPress={() => void run("Loading tickets", async () => { await loadIssues(cursor); })} />
             <Button title="Load all tickets" icon="Layers" onPress={() => void run("Loading all tickets", loadAllIssues)} />

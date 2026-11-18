@@ -14,13 +14,15 @@ export type IssueCounts = {
 type CacheEntry = {
   scope: string;
   showClosed: boolean;
+  // Which list configuration (scope and filters) the page belongs to; absent means the default list.
+  view?: string;
   issues: Issue[];
   nextCursor: string | null;
   updatedAt: string;
   counts?: IssueCounts;
 };
 
-export type CachedOverview = Omit<CacheEntry, "scope" | "showClosed">;
+export type CachedOverview = Omit<CacheEntry, "scope" | "showClosed" | "view">;
 
 // Keeps the API key out of the cache while still preventing a snapshot from one
 // Linear account from being shown after the host switches credentials.
@@ -35,19 +37,19 @@ export class TicketCache {
     private readonly path = join(process.env.PASEO_HOME?.replace(/^~(?=\/|$)/, homedir()) || join(homedir(), ".paseo"), "linear-tickets", "cache.json"),
   ) {}
 
-  async read(scope: string, showClosed: boolean): Promise<CachedOverview | null> {
+  async read(scope: string, showClosed: boolean, view = ""): Promise<CachedOverview | null> {
     await this.writes;
     const value = await this.readFile();
-    if (!value || value.scope !== scope || value.showClosed !== showClosed) return null;
+    if (!value || value.scope !== scope || value.showClosed !== showClosed || (value.view ?? "") !== view) return null;
     return { issues: value.issues, nextCursor: value.nextCursor, updatedAt: value.updatedAt, ...(value.counts ? { counts: value.counts } : {}) };
   }
 
-  saveIssues(scope: string, showClosed: boolean, page: { issues: Issue[]; nextCursor: string | null }): Promise<void> {
-    return this.mutate(() => ({ scope, showClosed, issues: page.issues, nextCursor: page.nextCursor, updatedAt: new Date().toISOString() }));
+  saveIssues(scope: string, showClosed: boolean, page: { issues: Issue[]; nextCursor: string | null }, view = ""): Promise<void> {
+    return this.mutate(() => ({ scope, showClosed, ...(view ? { view } : {}), issues: page.issues, nextCursor: page.nextCursor, updatedAt: new Date().toISOString() }));
   }
 
-  saveCounts(scope: string, showClosed: boolean, counts: IssueCounts): Promise<void> {
-    return this.mutate((current) => current && current.scope === scope && current.showClosed === showClosed
+  saveCounts(scope: string, showClosed: boolean, counts: IssueCounts, view = ""): Promise<void> {
+    return this.mutate((current) => current && current.scope === scope && current.showClosed === showClosed && (current.view ?? "") === view
       ? { ...current, counts }
       : current);
   }

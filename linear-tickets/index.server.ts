@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, getSettingsRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc } from "./shared/contracts";
+import { branchesRpc, cachedOverviewRpc, connectRpc, countIssuesRpc, customersRpc, getSettingsRpc, issueContextRpc, disconnectRpc, getDefaultPromptRpc, listIssuesRpc, launchAgentRpc, searchIssuesRpc, setDefaultPromptRpc, setSettingsRpc, statusRpc, workspaceLabelsRpc, DEFAULT_LIST_FILTER, type ListFilter } from "./shared/contracts";
 import { projectBranches } from "./server/projects";
-import { LinearService } from "./server/linear";
+import { LinearService, listViewKey } from "./server/linear";
 import { Launcher } from "./server/launch";
 import { Settings } from "./server/settings";
 import { DEFAULT_PROMPT_TEMPLATE } from "./shared/contracts";
@@ -21,26 +21,34 @@ export default function contribute(server: PluginServerContext) {
   server.handle(statusRpc, () => linear.status());
   server.handle(connectRpc, ({ apiKey }) => linear.authenticate(apiKey));
   server.handle(disconnectRpc, () => linear.disconnect());
-  server.handle(listIssuesRpc, async ({ cursor, stateNames, relation }) => {
+  // The default list keeps the empty cache key so snapshots from older versions stay usable.
+  const viewKey = (filter: ListFilter, showClosed: boolean) => {
+    const key = listViewKey(filter, showClosed);
+    return key === listViewKey(DEFAULT_LIST_FILTER, showClosed) ? "" : key;
+  };
+  server.handle(listIssuesRpc, async ({ cursor, stateNames, relation, filter = DEFAULT_LIST_FILTER }) => {
     const showClosed = (await settings.read()).showClosed;
-    const page = await linear.issues(cursor, stateNames, showClosed, relation);
+    const page = await linear.issues(cursor, stateNames, showClosed, relation, filter);
     if (!cursor && !stateNames?.length && !relation) {
       const scope = await cacheIdentity();
-      if (scope) await cache.saveIssues(scope, showClosed, page);
+      if (scope) await cache.saveIssues(scope, showClosed, page, viewKey(filter, showClosed));
     }
     return page;
   });
-  server.handle(countIssuesRpc, async () => {
+  server.handle(countIssuesRpc, async ({ filter = DEFAULT_LIST_FILTER }) => {
     const showClosed = (await settings.read()).showClosed;
-    const counts = await linear.countIssues(showClosed);
+    const counts = await linear.countIssues(showClosed, filter);
     const scope = await cacheIdentity();
-    if (scope) await cache.saveCounts(scope, showClosed, counts);
+    if (scope) await cache.saveCounts(scope, showClosed, counts, viewKey(filter, showClosed));
     return counts;
   });
-  server.handle(cachedOverviewRpc, async () => {
+  server.handle(cachedOverviewRpc, async ({ filter = DEFAULT_LIST_FILTER }) => {
     const scope = await cacheIdentity();
-    return scope ? cache.read(scope, (await settings.read()).showClosed) : null;
+    const showClosed = (await settings.read()).showClosed;
+    return scope ? cache.read(scope, showClosed, viewKey(filter, showClosed)) : null;
   });
+  server.handle(workspaceLabelsRpc, ({ refresh }) => linear.workspaceLabels(refresh === true));
+  server.handle(customersRpc, () => linear.customers());
   server.handle(searchIssuesRpc, ({ term, cursor }) => linear.searchIssues(term, cursor));
   server.handle(issueContextRpc, ({ id }) => linear.detail(id));
   server.handle(branchesRpc, ({ projectId }, { paseo }) => projectBranches(paseo, projectId));

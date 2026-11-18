@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { MAX_PROJECT_MAPPINGS, type ProjectMapping } from "../shared/mapping";
+import { MAPPING_KEY_PATTERN, listViewSchema, type ListView } from "../shared/contracts";
 
 export const MAX_TEMPLATE_LENGTH = 8_000;
 
@@ -15,7 +16,11 @@ export type PluginSettings = {
   launchPreferences: Record<string, LaunchPreference>;
   projectMappings: Record<string, ProjectMapping>;
   agentLinearAccess: boolean;
+  listView: ListView | null;
+  lastProject: LastProject | null;
 };
+
+export type LastProject = { projectId: string; baseBranch?: string };
 
 type SettingsFile = {
   template?: string;
@@ -25,7 +30,25 @@ type SettingsFile = {
   launchPreferences?: Record<string, LaunchPreference>;
   projectMappings?: Record<string, ProjectMapping>;
   agentLinearAccess?: boolean;
+  listView?: unknown;
+  lastProject?: unknown;
 };
+
+function normalizeLastProject(value: unknown): LastProject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const projectId = savedString(candidate.projectId);
+  if (!projectId) return null;
+  const baseBranch = savedString(candidate.baseBranch);
+  return { projectId, ...(baseBranch ? { baseBranch } : {}) };
+}
+
+// An invalid or outdated saved view is dropped rather than failing the whole settings read.
+export function normalizeListView(value: unknown): ListView | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = listViewSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
 
 function savedString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= 500 ? value : undefined;
@@ -44,7 +67,7 @@ function normalizeLaunchPreferences(value: unknown): Record<string, LaunchPrefer
   }));
 }
 
-const MAPPING_KEY = /^(project|team):[A-Za-z0-9_-]{1,100}$/;
+const MAPPING_KEY = MAPPING_KEY_PATTERN;
 export function normalizeProjectMappings(value: unknown): Record<string, ProjectMapping> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).slice(0, MAX_PROJECT_MAPPINGS).flatMap(([key, raw]) => {
@@ -66,6 +89,8 @@ export type SettingsPatch = {
   launchPreference?: { provider: string } & LaunchPreference;
   projectMapping?: { key: string } & ProjectMapping;
   forgetProjectMapping?: string;
+  listView?: ListView;
+  lastProject?: LastProject;
 };
 
 // Returns null for an empty template (meaning: use the built-in default).
@@ -116,6 +141,8 @@ export class Settings {
       launchPreferences,
       projectMappings: normalizeProjectMappings(value.projectMappings),
       agentLinearAccess: value.agentLinearAccess !== false,
+      listView: normalizeListView(value.listView),
+      lastProject: normalizeLastProject(value.lastProject),
     };
   }
 
@@ -141,6 +168,8 @@ export class Settings {
       markInProgress: patch.markInProgress ?? current.markInProgress,
       showClosed: patch.showClosed ?? current.showClosed,
       agentLinearAccess: patch.agentLinearAccess ?? current.agentLinearAccess,
+      listView: patch.listView === undefined ? current.listView : normalizeListView(patch.listView),
+      lastProject: patch.lastProject === undefined ? current.lastProject : normalizeLastProject(patch.lastProject),
     };
     if (patch.launchPreference) {
       const { provider, model, modeId, thinkingOptionId } = patch.launchPreference;
@@ -164,7 +193,7 @@ export class Settings {
 
   private async write(value: PluginSettings): Promise<PluginSettings> {
     const hasMappings = Object.keys(value.projectMappings).length > 0;
-    if (!value.template && !value.markInProgress && !value.showClosed && !value.lastProvider && !Object.keys(value.launchPreferences).length && !hasMappings && value.agentLinearAccess) {
+    if (!value.template && !value.markInProgress && !value.showClosed && !value.lastProvider && !Object.keys(value.launchPreferences).length && !hasMappings && value.agentLinearAccess && !value.listView && !value.lastProject) {
       await rm(this.path, { force: true });
       return value;
     }
@@ -179,6 +208,8 @@ export class Settings {
     if (Object.keys(value.launchPreferences).length) fileValue.launchPreferences = value.launchPreferences;
     if (hasMappings) fileValue.projectMappings = value.projectMappings;
     if (!value.agentLinearAccess) fileValue.agentLinearAccess = false;
+    if (value.listView) fileValue.listView = value.listView;
+    if (value.lastProject) fileValue.lastProject = value.lastProject;
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     try {
       await writeFile(temporary, JSON.stringify(fileValue), { mode: 0o600, flag: "wx" });
