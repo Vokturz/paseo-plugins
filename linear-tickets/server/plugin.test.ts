@@ -10,7 +10,7 @@ import { buildContext, buildPrompt, issuePage, normalizeIssue, connection, relat
 import { Credentials } from "./credentials";
 import { Launcher, safeBranchName } from "./launch";
 import { Settings, MAX_TEMPLATE_LENGTH, normalizeTemplate } from "./settings";
-import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, TEAM_STATES_QUERY, UPDATE_ISSUE_STATE_QUERY, resolveStartedState, listIssueFilter, type Post, type TeamState } from "./linear";
+import { LinearService, postGraphQL, COMMENT_QUERY, ISSUE_DETAIL_QUERY, ISSUE_NEEDS_QUERY, PROJECT_NEEDS_QUERY, LIST_ISSUES_QUERY, SEARCH_ISSUES_QUERY, VIEWER_QUERY, TEAM_STATES_QUERY, UPDATE_ISSUE_STATE_QUERY, resolveStartedState, listIssueFilter, type Post, type TeamState } from "./linear";
 import { cachedOverviewRpc, countIssuesRpc, listIssuesRpc, searchIssuesRpc } from "../shared/contracts";
 import { parseTicketIntro } from "../shared/ticket-intro";
 
@@ -42,7 +42,7 @@ const noMark = { markInProgress: async () => ({ changed: false }) };
 test("server entrypoint loads and registers valid Paseo RPC contracts", () => {
   const names: string[] = [];
   const cleanup = contribute({ handle(contract: { name: string }) { names.push(contract.name); } } as unknown as PluginServerContext);
-  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.cached-overview", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.get-settings", "linear.set-settings", "linear.launch-agent"]);
+  assert.deepEqual(names, ["linear.status", "linear.connect", "linear.disconnect", "linear.list-issues", "linear.count-issues", "linear.cached-overview", "linear.labels", "linear.customers", "linear.search-issues", "linear.issue-context", "linear.project-branches", "linear.get-default-prompt", "linear.set-default-prompt", "linear.get-settings", "linear.set-settings", "linear.launch-agent"]);
   cleanup();
 });
 
@@ -259,14 +259,14 @@ test("settings persist the template with private permissions and reset removes i
   const path = join(directory, "settings.json");
   try {
     const settings = new Settings(path);
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     const saved = await settings.save("Handle {{ticket}}\n{{context}}");
     assert.equal(saved.template, "Handle {{ticket}}\n{{context}}");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await settings.read(), saved);
-    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.save(""), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     await assert.rejects(readFile(path), { code: "ENOENT" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -276,17 +276,17 @@ test("the mark-in-progress setting round-trips without disturbing the saved temp
   try {
     const settings = new Settings(path);
     await settings.patch({ markInProgress: true });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     await settings.save("Handle {{ticket}}\n{{context}}");
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     // The closed-states setting round-trips the same way and never disturbs the other fields.
     await settings.patch({ showClosed: true });
-    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: "Handle {{ticket}}\n{{context}}", markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     // Clearing the template keeps the flags; clearing the last flag with no template removes the file.
     await settings.patch({ template: "" });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: true, showClosed: true, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     await settings.patch({ markInProgress: false, showClosed: false });
-    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true });
+    assert.deepEqual(await settings.read(), { template: null, markInProgress: false, showClosed: false, lastProvider: null, launchPreferences: {}, projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null });
     await assert.rejects(readFile(path), { code: "ENOENT" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -304,7 +304,7 @@ test("settings remember the last successful launch choices per provider", async 
         codex: { model: "codex/gpt-5", modeId: "code", thinkingOptionId: "high" },
         claude: { model: "claude/sonnet" },
       },
-      projectMappings: {}, agentLinearAccess: true,
+      projectMappings: {}, agentLinearAccess: true, listView: null, lastProject: null,
     });
     assert.equal((await stat(path)).mode & 0o777, 0o600);
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -482,10 +482,12 @@ test("details fetch relations and paginated comments using the resolved issue ID
         ? { issue: { comments: { nodes: [comment], pageInfo: { hasNextPage: true, endCursor: "c2" } } } }
         : { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: "c3" } } } };
     }
+    if (query === ISSUE_NEEDS_QUERY) return { issue: { needs: { nodes: [] } } };
+    if (query === PROJECT_NEEDS_QUERY) return { customerNeeds: { nodes: [] } };
     throw new Error(`Unexpected query: ${query}`);
   };
   const result = await mockLinear(post).detail("ENG-42");
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 5);
   assert.equal(calls[0].query, ISSUE_DETAIL_QUERY);
   assert.deepEqual(calls[0].variables, { id: "ENG-42" });
   assert.equal(calls[1].query, COMMENT_QUERY);

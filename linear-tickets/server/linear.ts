@@ -1,5 +1,6 @@
-import type { Issue, TicketDetail } from "../shared/contracts";
-import { buildContext, normalizeIssue, issuePage, connection, record, stateHistorySpans, label, ticketRelations } from "./context";
+import { createHash } from "node:crypto";
+import { DEFAULT_LIST_FILTER, type CustomerRequest, type Issue, type IssueLabel, type ListFilter, type TicketDetail } from "../shared/contracts";
+import { buildContext, customerRequests, normalizeIssue, normalizeLabel, issuePage, connection, record, stateHistorySpans, label, ticketRelations } from "./context";
 import { Credentials } from "./credentials";
 
 const endpoint = "https://api.linear.app/graphql";
@@ -54,6 +55,9 @@ export const postGraphQL: Post = async (key, query, variables) => {
   return record(body.data);
 };
 
+// Labels carry their group (parent) so the UI can show "Area / Core API" and filter by group.
+const LABEL_FIELDS = "labels(first: 50) { nodes { id name color parent { id name groupType } } }";
+
 export const VIEWER_QUERY = `query viewerCheck {
   viewer { id }
 }`;
@@ -68,11 +72,14 @@ export const LIST_ISSUES_QUERY = `query listIssues($first: Int!, $after: String,
       url
       state { name type }
       priorityLabel
+      priority
       dueDate
       estimate
+      assignee { id name }
       project { name identifier url }
       team { name key }
-      labels(first: 50) { nodes { id name } }
+      ${LABEL_FIELDS}
+      needs(first: 10) { nodes { customer { id name } } }
       relations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
       inverseRelations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
       createdAt
@@ -101,11 +108,14 @@ export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: I
       url
       state { name type }
       priorityLabel
+      priority
       dueDate
       estimate
+      assignee { id name }
       project { name identifier url }
       team { name key }
-      labels(first: 50) { nodes { id name } }
+      ${LABEL_FIELDS}
+      needs(first: 10) { nodes { customer { id name } } }
       relations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
       inverseRelations(first: 50) { nodes { type issue { id } relatedIssue { id } } }
       createdAt
@@ -119,7 +129,9 @@ export const SEARCH_ISSUES_QUERY = `query searchIssues($term: String!, $first: I
 // across caching, tests and request logging. An explicit state-name selection always
 // wins over the default scope: picking the Done chip means seeing Done tickets. When
 // closed states are not shown, completed, canceled and duplicated work is hidden.
-export function listIssueFilter(stateNames?: string[], showClosed?: boolean, relation?: "blocking" | "blocked"): Record<string, unknown> {
+// `groupLabelIds` maps a group name to the IDs of every label in groups of that name;
+// it is only needed to express "no label of this group", which Linear has no negation for.
+export function listIssueFilter(stateNames?: string[], showClosed?: boolean, relation?: "blocking" | "blocked", view: ListFilter = DEFAULT_LIST_FILTER, groupLabelIds: Record<string, string[]> = {}): Record<string, unknown> {
   const filter: Record<string, unknown> = { assignee: { isMe: { eq: true } } };
   const state: Record<string, unknown> = {};
   const names = [...new Set((stateNames ?? []).map((name) => name.trim()).filter(Boolean))].sort();
@@ -128,8 +140,63 @@ export function listIssueFilter(stateNames?: string[], showClosed?: boolean, rel
   if (Object.keys(state).length) filter.state = state;
   if (relation === "blocking") filter.hasBlockingRelations = { eq: true };
   if (relation === "blocked") filter.hasBlockedByRelations = { eq: true };
+  const and: Record<string, unknown>[] = [];
+  const byGroup = new Map<string, Set<string>>();
+  for (const item of view.labels) {
+    const names = byGroup.get(item.group) ?? new Set<string>();
+    names.add(item.name);
+    byGroup.set(item.group, names);
+  }
+  for (const [group, labelNames] of [...byGroup].sort(([a], [b]) => a.localeCompare(b))) {
+    const some: Record<string, unknown> = { name: { in: [...labelNames].sort() } };
+    if (group) some.parent = { name: { eq: group } };
+    and.push({ labels: { some } });
+  }
+  for (const group of [...new Set(view.missingGroups)].sort()) {
+    const ids = [...new Set(groupLabelIds[group] ?? [])].sort();
+    if (ids.length) and.push({ labels: { every: { id: { nin: ids } } } });
+  }
+  const customerIds = [...new Set(view.customerIds)].sort();
+  if (customerIds.length) and.push({ needs: { some: { customer: { id: { in: customerIds } } } } });
+  else if (view.anyCustomer) and.push({ customerCount: { gt: 0 } });
+  if (and.length) filter.and = and;
   return filter;
 }
+
+// A stable identity for one list configuration, used to key the cached first page.
+export function listViewKey(view: ListFilter, showClosed: boolean): string {
+  return createHash("sha256").update(JSON.stringify([showClosed, [...view.labels].map((item) => `${item.group}\u0000${item.name}`).sort(), [...view.missingGroups].sort(), [...view.customerIds].sort(), view.anyCustomer])).digest("hex").slice(0, 24);
+}
+
+export const WORKSPACE_LABELS_QUERY = `query workspaceLabels($first: Int!, $after: String) {
+  issueLabels(first: $first, after: $after, filter: { isGroup: { eq: false } }) {
+    nodes { id name color parent { id name groupType } team { id name key } }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+export const CUSTOMERS_QUERY = `query customers($first: Int!, $after: String) {
+  customers(first: $first, after: $after) {
+    nodes { id name tier { name displayName } }
+    pageInfo { hasNextPage endCursor }
+  }
+}`;
+
+export const ISSUE_NEEDS_QUERY = `query issueNeeds($id: String!) {
+  issue(id: $id) {
+    needs(first: 50) { nodes { id content priority url customer { id name url tier { name displayName } } } }
+  }
+}`;
+
+// Requests attached to the ticket's project but not to any ticket: the phase-level asks.
+export const PROJECT_NEEDS_QUERY = `query projectNeeds($projectId: ID!) {
+  customerNeeds(first: 50, filter: { project: { id: { eq: $projectId } }, issue: { null: true } }) {
+    nodes { id content priority url customer { id name url tier { name displayName } } }
+  }
+}`;
+
+const LABELS_TTL_MS = 5 * 60_000;
+export type WorkspaceLabel = IssueLabel & { team: string };
 
 export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
   viewer { id }
@@ -142,11 +209,13 @@ export const ISSUE_DETAIL_QUERY = `query issueDetail($id: String!) {
     state { name type }
     branchName
     priorityLabel
+    priority
     dueDate
     estimate
+    assignee { id name }
     project { id name identifier url }
     team { id name key }
-    labels(first: 50) { nodes { id name } }
+    ${LABEL_FIELDS}
     createdAt
     updatedAt
     parent { id identifier title url state { name type } assignee { id name } }
@@ -203,6 +272,7 @@ export class LinearService {
   }
 
   async authenticate(key: string) {
+    this.labelsCache = null;
     const data = await this.post(key, VIEWER_QUERY, {});
     const viewer = data.viewer;
     if (!viewer || typeof viewer !== "object" || typeof (viewer as { id?: unknown }).id !== "string") {
@@ -213,6 +283,7 @@ export class LinearService {
   }
 
   async disconnect() {
+    this.labelsCache = null;
     await this.credentials.remove();
     return this.status();
   }
@@ -223,15 +294,79 @@ export class LinearService {
     return work(key);
   }
 
-  async issues(cursor?: string, stateNames?: string[], showClosed?: boolean, relation?: "blocking" | "blocked") {
+  async issues(cursor?: string, stateNames?: string[], showClosed?: boolean, relation?: "blocking" | "blocked", view: ListFilter = DEFAULT_LIST_FILTER) {
+    const groups = await this.groupLabelIds(view);
     return this.withKey(async (key) =>
-      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, showClosed, relation) })).issues));
+      issuePage(record(await this.post(key, LIST_ISSUES_QUERY, { first: 50, after: cursor ?? null, filter: listIssueFilter(stateNames, showClosed, relation, view, groups) })).issues));
   }
 
-  // Linear's GraphQL exposes no aggregation, so chip counts come from a bounded pass over
-  // every assignment (25 pages x 50). `complete` is false when the cap was hit; the client
-  // then shows counts as a lower bound instead of pretending they are exact.
-  async countIssues(showClosed?: boolean): Promise<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean }> {
+  // Only "missing group" filters need label IDs; other filters match by name in Linear.
+  private async groupLabelIds(view: ListFilter): Promise<Record<string, string[]>> {
+    if (!view.missingGroups.length) return {};
+    const { labels } = await this.workspaceLabels();
+    const out: Record<string, string[]> = {};
+    for (const item of labels) if (item.groupName && view.missingGroups.includes(item.groupName)) (out[item.groupName] ??= []).push(item.id);
+    const unknown = view.missingGroups.filter((group) => !out[group]);
+    if (unknown.length) throw new Error(`No Linear labels were found in the group ${unknown.map((group) => `"${group}"`).join(", ")}. Remove that filter or refresh the labels.`);
+    return out;
+  }
+
+  private labelsCache: { scope: string; at: number; value: { labels: WorkspaceLabel[]; complete: boolean } } | null = null;
+
+  // Every non-group label, with its group and team, cached for a few minutes per key.
+  async workspaceLabels(refresh = false): Promise<{ labels: WorkspaceLabel[]; complete: boolean }> {
+    return this.withKey(async (key) => {
+      const scope = createHash("sha256").update(key).digest("hex");
+      const cached = this.labelsCache;
+      if (!refresh && cached && cached.scope === scope && Date.now() - cached.at < LABELS_TTL_MS) return cached.value;
+      const labels: WorkspaceLabel[] = [];
+      let after: string | null = null;
+      let complete = false;
+      for (let page = 0; page < 8; page++) {
+        const data = connection(record(await this.post(key, WORKSPACE_LABELS_QUERY, { first: 250, after })).issueLabels);
+        for (const node of data.nodes) {
+          const item = normalizeLabel(node);
+          if (!item) continue;
+          const team = node && typeof node === "object" ? (node as { team?: unknown }).team : null;
+          labels.push({ ...item, team: team && typeof team === "object" ? label((team as { name?: unknown }).name) : "" });
+        }
+        after = data.hasNextPage === true ? data.endCursor : null;
+        if (!after) { complete = true; break; }
+      }
+      labels.sort((a, b) => a.groupName.localeCompare(b.groupName) || a.name.localeCompare(b.name) || a.team.localeCompare(b.team));
+      const value = { labels, complete };
+      this.labelsCache = { scope, at: Date.now(), value };
+      return value;
+    });
+  }
+
+  // Customers are a Linear feature some workspaces do not use; failures report "unavailable".
+  async customers(): Promise<{ available: boolean; customers: { id: string; name: string; tier: string }[]; message?: string }> {
+    return this.withKey(async (key) => {
+      const customers: { id: string; name: string; tier: string }[] = [];
+      try {
+        let after: string | null = null;
+        for (let page = 0; page < 4; page++) {
+          const data = connection(record(await this.post(key, CUSTOMERS_QUERY, { first: 250, after })).customers);
+          for (const node of data.nodes) {
+            if (!node || typeof node !== "object") continue;
+            const item = node as { id?: unknown; name?: unknown; tier?: { name?: unknown; displayName?: unknown } | null };
+            if (typeof item.id !== "string" || !item.id) continue;
+            customers.push({ id: item.id, name: label(item.name) || "Customer", tier: item.tier ? label(item.tier.displayName) || label(item.tier.name) : "" });
+          }
+          after = data.hasNextPage === true ? data.endCursor : null;
+          if (!after) break;
+        }
+      } catch (error) {
+        return { available: false, customers: [], message: error instanceof Error ? error.message : "Customers could not be loaded." };
+      }
+      customers.sort((a, b) => a.name.localeCompare(b.name));
+      return { available: true, customers };
+    });
+  }
+
+  async countIssues(showClosed?: boolean, view: ListFilter = DEFAULT_LIST_FILTER): Promise<{ total: number; byName: Record<string, number>; byType: Record<string, number>; complete: boolean }> {
+    const groups = await this.groupLabelIds(view);
     return this.withKey(async (key) => {
       const byName: Record<string, number> = {};
       const byType: Record<string, number> = {};
@@ -239,7 +374,7 @@ export class LinearService {
       let after: string | null = null;
       let complete = false;
       for (let page = 0; page < 25; page++) {
-        const data = record(await this.post(key, COUNT_ISSUES_QUERY, { first: 50, after, filter: listIssueFilter(undefined, showClosed) }));
+        const data = record(await this.post(key, COUNT_ISSUES_QUERY, { first: 50, after, filter: listIssueFilter(undefined, showClosed, undefined, view, groups) }));
         const pageData = record(data.issues);
         for (const node of Array.isArray(pageData.nodes) ? (pageData.nodes as unknown[]) : []) {
           if (!node || typeof node !== "object") continue;
@@ -288,8 +423,19 @@ export class LinearService {
         comments = [];
         warnings.push("Comments could not be loaded; only the ticket details are included.");
       }
-      return { issue, teamId, projectId, warnings, relations: ticketRelations(issueData, viewerId), context: buildContext(issueData, comments, stateHistorySpans(issueData)) };
+      const requests = await this.customerRequests(key, issue.id, projectId).catch(() => null);
+      if (!requests) warnings.push("Customer requests could not be loaded.");
+      return { issue, teamId, projectId, warnings, customerRequests: requests ?? [], relations: ticketRelations(issueData, viewerId), context: buildContext(issueData, comments, stateHistorySpans(issueData), requests ?? []) };
     });
+  }
+
+  // Requests on the ticket, then project-level requests not tied to any ticket.
+  private async customerRequests(key: string, issueId: string, projectId: string | null): Promise<CustomerRequest[]> {
+    const issue = record(record(await this.post(key, ISSUE_NEEDS_QUERY, { id: issueId })).issue ?? {});
+    const ticket = customerRequests(connection(issue.needs ?? { nodes: [] }).nodes, "ticket");
+    if (!projectId) return ticket;
+    const project = customerRequests(connection(record(await this.post(key, PROJECT_NEEDS_QUERY, { projectId })).customerNeeds ?? { nodes: [] }).nodes, "project");
+    return [...ticket, ...project];
   }
 
   // The team's workflow states, cached for the plugin's lifetime; they rarely change.

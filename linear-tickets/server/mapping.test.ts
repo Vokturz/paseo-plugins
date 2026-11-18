@@ -79,3 +79,30 @@ test("settings cap the number of project mappings", async () => {
     assert.equal((await settings.read()).projectMappings["project:p0"].projectId, "y");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("a label mapping wins over project and team mappings, and conflicting labels fall through", () => {
+  const labels = [{ id: "l-api", name: "Core API", groupName: "Area" }, { id: "l-bug", name: "Reliability", groupName: "Bug" }];
+  const withLabels = { ...source("lp-1", "paseo-ops"), labels };
+  const mappings = {
+    "label:l-api": { projectId: "p-atlas", baseBranch: "refs/heads/main", label: "Area / Core API" },
+    "project:lp-1": { projectId: "p-ops", label: "paseo-ops" },
+  };
+  assert.deepEqual(resolveMapping(withLabels, mappings, projects), { projectId: "p-atlas", baseBranch: "refs/heads/main", reason: "label", labels: ["Area / Core API"] });
+  // A second label pointing elsewhere is ambiguous: the project mapping decides instead.
+  const conflicting = { ...mappings, "label:l-bug": { projectId: "p-dup-1", label: "Bug / Reliability" } };
+  assert.deepEqual(resolveMapping(withLabels, conflicting, projects), { projectId: "p-ops", reason: "saved" });
+  // Two labels on the same target agree.
+  const agreeing = { ...mappings, "label:l-bug": { projectId: "p-atlas", baseBranch: "refs/heads/main", label: "Bug / Reliability" } };
+  assert.deepEqual(resolveMapping(withLabels, agreeing, projects)?.labels, ["Area / Core API", "Bug / Reliability"]);
+  // A label mapped to a project that left Paseo is ignored.
+  const stale = { "label:l-api": { projectId: "gone", label: "Area / Core API" } };
+  assert.equal(resolveMapping(withLabels, stale, projects)?.reason, "name");
+});
+
+test("without any mapping the most recently used project is preselected, while it still exists", () => {
+  const recent = { projectId: "p-atlas", baseBranch: "refs/heads/dev" };
+  assert.deepEqual(resolveMapping(source("lp-9", "Unknown"), {}, projects, recent), { projectId: "p-atlas", baseBranch: "refs/heads/dev", reason: "recent" });
+  // Any real mapping or a unique name match wins over the recent project.
+  assert.equal(resolveMapping(source("lp-1", "paseo-ops"), {}, projects, recent)?.reason, "name");
+  assert.equal(resolveMapping(source("lp-9", "Unknown"), {}, projects, { projectId: "gone" }), null);
+});

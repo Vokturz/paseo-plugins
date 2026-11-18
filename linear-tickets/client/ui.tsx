@@ -181,21 +181,30 @@ export function PriorityMark({ priority, t, showLabel = false }: { priority: str
   </View>;
 }
 
-export function LabelChip({ label, t }: { label: string; t: Tokens }) {
-  return <View style={{ ...t.chip, backgroundColor: t.colors.surface2, borderColor: "transparent", flexDirection: "row", alignItems: "center", gap: 5, maxWidth: 190 }}>
-    <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: t.colors.accent }} />
-    <Text numberOfLines={1} style={{ color: t.colors.foregroundMuted, fontSize: 11, fontWeight: "500" }}>{label}</Text>
-  </View>;
+export function LabelChip({ label, t, color, icon, onRemove }: { label: string; t: Tokens; color?: string; icon?: string; onRemove?: () => void }) {
+  const body = <>
+    {icon ? <Icon name={icon} size={11} color={color ?? t.colors.accent} /> : <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: color ?? t.colors.accent }} />}
+    <Text numberOfLines={1} style={{ color: t.colors.foregroundMuted, fontSize: 11, fontWeight: "500", flexShrink: 1 }}>{label}</Text>
+    {onRemove && <Icon name="X" size={11} color={t.colors.foregroundMuted} />}
+  </>;
+  const style = { ...t.chip, backgroundColor: t.colors.surface2, borderColor: "transparent", flexDirection: "row" as const, alignItems: "center" as const, gap: 5, maxWidth: 240 };
+  return onRemove
+    ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${label}`} onPress={onRemove} style={({ pressed }) => ({ ...style, minHeight: 28, opacity: pressed ? 0.7 : 1 })}>{body}</Pressable>
+    : <View style={style}>{body}</View>;
 }
 
-export function MetaItem({ icon, label, value, t, chips }: { icon: string; label: string; value?: string; t: Tokens; chips?: string[] }) {
+export type ChipData = string | { label: string; color?: string; icon?: string };
+
+export function MetaItem({ icon, label, value, t, chips }: { icon: string; label: string; value?: string; t: Tokens; chips?: ChipData[] }) {
   return <View style={{ flexBasis: t.compact ? "44%" : 160, flexGrow: 1, gap: 5, minWidth: t.compact ? 100 : 140 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
       <Icon name={icon} size={11} color={t.colors.foregroundMuted} />
       <Text style={{ ...t.eyebrow, letterSpacing: 1, fontSize: 9.5 }}>{label}</Text>
     </View>
     {chips?.length
-      ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>{chips.map((chip) => <LabelChip key={chip} label={chip} t={t} />)}</View>
+      ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>{chips.map((chip) => typeof chip === "string"
+        ? <LabelChip key={chip} label={chip} t={t} />
+        : <LabelChip key={chip.label} label={chip.label} color={chip.color} icon={chip.icon} t={t} />)}</View>
       : <Text numberOfLines={2} style={t.strong}>{value || "—"}</Text>}
   </View>;
 }
